@@ -1,0 +1,55 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Deploy to EC2
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          # Write SSH key
+          echo "$SSH_KEY" > key.pem
+          chmod 400 key.pem
+
+          # Stop the running server
+          ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
+            "sudo systemctl stop game-server || true"
+
+          # Upload new binary
+          scp -o StrictHostKeyChecking=no -i key.pem \
+            target/x86_64-unknown-linux-gnu/release/game-server \
+            ubuntu@$HOST:/home/ubuntu/game-server/server
+
+          # Make executable and restart
+          ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
+            "chmod +x /home/ubuntu/game-server/server && sudo systemctl start game-server"
+
+          # Clean up key
+          rm key.pem
