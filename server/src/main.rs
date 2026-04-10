@@ -31,6 +31,7 @@ fn handle_client(mut stream: TcpStream) {
     }
 }
 
+
 fn main() {
     let port = std::env::var("GAME_PORT").unwrap_or_else(|_| "7777".to_string());
     let addr = format!("0.0.0.0:{}", port);
