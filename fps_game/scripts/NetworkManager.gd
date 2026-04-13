@@ -1,149 +1,224 @@
 extends Node
 
-# NetworkManager.gd
-# ============================================================
-# THIS IS THE STUB YOUR RUST PROTOCOL WILL REPLACE.
-# All multiplayer state flows through this singleton.
-# Godot itself does zero networking - this manager is the
-# single integration point between the game and your UDP protocol.
-# ============================================================
+@export var use_cloud := false
 
-signal player_joined(player_id: int, player_data: Dictionary)
-signal player_left(player_id: int)
-signal player_state_updated(player_id: int, state: Dictionary)
-signal hit_confirmed(shooter_id: int, target_id: int, damage: int)
+const CLOUD_IP := "3.218.9.34"
+const LOCAL_IP := "127.0.0.1"
 
-# Our local player ID (assigned by server in real implementation)
-var local_player_id: int = 1
+# --- Config ---
+var server_ip: String:
+	get: return CLOUD_IP if use_cloud else LOCAL_IP
+var tcp_port := 7777
+var udp_port_server := 7778
 
-# All known players: { player_id: { position, rotation, health, name, color } }
-var player_states: Dictionary = {}
+# --- State ---
+var my_player_id: int = -1
+var input_seq: int = 0
+var simulate_local := false
 
-# Sequence number for outgoing messages
-var _seq: int = 0
+# --- Sockets ---
+var tcp: StreamPeerTCP
+var udp: PacketPeerUDP
+var my_udp_port: int = 0
 
-# Simulated network stats (for testing without Rust server)
-var simulate_local: bool = true
+# --- Scene refs ---
+var local_player: Node = null
+var remote_players: Dictionary = {}  # player_id (int) -> RemotePlayer node
 
-func _ready() -> void:
-	if simulate_local:
-		_spawn_dummy_players()
+# --- Signals ---
+signal player_joined(player_id: int)
 
-# ============================================================
-# OUTGOING - called by game, send to Rust server
-# ============================================================
+func _ready():
+	_start_udp()
+	_connect_tcp()
 
-func send_player_input(move_dir: Vector3, look_rotation: Vector2, jumped: bool) -> void:
-	_seq += 1
-	# TODO: Serialize into your binary protocol and send over UDP
-	# Message type: 0x01 - PlayerInput
-	# Fields: seq, player_id, move_dir (x,y,z), look_rotation (yaw,pitch), jumped
-	var msg = {
-		"type": 0x01,
-		"seq": _seq,
-		"player_id": local_player_id,
-		"move_dir": move_dir,
-		"look_rotation": look_rotation,
-		"jumped": jumped,
-		"timestamp": Time.get_ticks_msec()
-	}
-	_stub_loopback(msg)
+# -------------------------------------------------------
+# Step 1: Bind UDP first so we know our local port
+# -------------------------------------------------------
+func _start_udp():
+	udp = PacketPeerUDP.new()
+	udp.bind(0)  # OS picks a free port
+	my_udp_port = udp.get_local_port()
+	udp.set_dest_address(server_ip, udp_port_server)
+	print("UDP bound on local port: ", my_udp_port)
 
-func send_shoot_event(origin: Vector3, direction: Vector3) -> void:
-	_seq += 1
-	# TODO: Serialize and send over UDP - RELIABLE channel (must arrive)
-	# Message type: 0x02 - ShootEvent
-	var msg = {
-		"type": 0x02,
-		"seq": _seq,
-		"player_id": local_player_id,
-		"origin": origin,
-		"direction": direction,
-		"timestamp": Time.get_ticks_msec()
-	}
-	_stub_loopback(msg)
+# -------------------------------------------------------
+# Step 2: TCP connect and send Connect (0x01)
+# -------------------------------------------------------
+func _connect_tcp():
+	tcp = StreamPeerTCP.new()
+	tcp.connect_to_host(server_ip, tcp_port)
+	await _wait_tcp_connected()
+	_send_connect()
 
-# ============================================================
-# INCOMING - called by Rust protocol when packet arrives
-# ============================================================
+func _wait_tcp_connected():
+	while tcp.get_status() == StreamPeerTCP.STATUS_CONNECTING:
+		tcp.poll()  # Required in Godot 4 to advance connection state
+		await get_tree().process_frame
+	if tcp.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		push_error("TCP connection failed")
 
-func receive_world_state(state_data: Dictionary) -> void:
-	# Called every server tick with authoritative state
-	# state_data = { players: { id: { pos, rot, health } }, tick: int }
-	for pid in state_data.get("players", {}):
-		var pstate = state_data["players"][pid]
-		apply_player_state(int(pid), pstate)
+func _send_connect():
+	# Connect (0x01): [0x01, udp_port_hi, udp_port_lo]
+	var buf := PackedByteArray()
+	buf.append(0x01)
+	buf.append((my_udp_port >> 8) & 0xFF)  # big-endian u16
+	buf.append(my_udp_port & 0xFF)
+	tcp.put_data(buf)
+	print("Sent Connect (0x01) with UDP port ", my_udp_port)
 
-func receive_hit_confirmed(shooter_id: int, target_id: int, damage: int) -> void:
-	# Reliable message - hit was confirmed by server
-	if player_states.has(target_id):
-		player_states[target_id]["health"] -= damage
-		player_states[target_id]["health"] = max(0, player_states[target_id]["health"])
-	emit_signal("hit_confirmed", shooter_id, target_id, damage)
+# -------------------------------------------------------
+# Frame loop
+# -------------------------------------------------------
+func _process(_delta):
+	_poll_tcp()
+	if my_player_id >= 0:
+		_send_player_input()
+		_poll_udp()
 
-func apply_player_state(player_id: int, state: Dictionary) -> void:
-	if not player_states.has(player_id):
-		player_states[player_id] = _default_player_state(player_id)
-		emit_signal("player_joined", player_id, player_states[player_id])
-	player_states[player_id].merge(state, true)
-	emit_signal("player_state_updated", player_id, player_states[player_id])
+# -------------------------------------------------------
+# TCP IN: Read Connected (0x10) -> get player_id (u16)
+# -------------------------------------------------------
+func _poll_tcp():
+	if tcp == null:
+		return
+	tcp.poll()  # Required in Godot 4 to keep connection alive
+	if tcp.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		return
+	if tcp.get_available_bytes() < 3:
+		return
 
-# ============================================================
-# DRIFT MEASUREMENT - for your evaluation component
-# ============================================================
+	var type_byte = tcp.get_u8()
+	if type_byte == 0x10:
+		# Connected: [0x10, player_id_hi, player_id_lo]
+		var hi = tcp.get_u8()
+		var lo = tcp.get_u8()
+		my_player_id = (hi << 8) | lo
+		print("Connected! player_id = ", my_player_id)
 
-var drift_log: Array = []
+# -------------------------------------------------------
+# UDP OUT: PlayerInput (0x02) every frame
+# Layout: [type:u8, seq:u16be, yaw:f32be, pitch:f32be, move_x:i8, move_z:i8]
+# -------------------------------------------------------
+func _send_player_input():
+	if udp == null or local_player == null:
+		return
 
-func log_drift(player_id: int, expected_pos: Vector3, actual_pos: Vector3) -> void:
-	var drift = expected_pos.distance_to(actual_pos)
-	drift_log.append({
-		"tick": Time.get_ticks_msec(),
-		"player_id": player_id,
-		"drift": drift,
-		"expected": expected_pos,
-		"actual": actual_pos
-	})
+	# Read movement direction from input (-1, 0, or 1)
+	var move_x: int = 0
+	var move_z: int = 0
+	if Input.is_action_pressed("move_right"):   move_x += 1
+	if Input.is_action_pressed("move_left"):    move_x -= 1
+	if Input.is_action_pressed("move_backward"): move_z += 1
+	if Input.is_action_pressed("move_forward"): move_z -= 1
 
-func export_drift_log() -> String:
-	# Call this at end of session to get CSV for your graphs
-	var csv = "tick,player_id,drift\n"
-	for entry in drift_log:
-		csv += "%d,%d,%.4f\n" % [entry["tick"], entry["player_id"], entry["drift"]]
-	return csv
+	# Get camera orientation
+	var yaw: float = local_player.rotation.y
+	var pitch: float = 0.0
+	if local_player.has_node("CameraMount"):
+		pitch = local_player.get_node("CameraMount").rotation.x
 
-# ============================================================
-# LOCAL SIMULATION STUB (no Rust server needed yet)
-# ============================================================
+	input_seq = (input_seq + 1) % 65536
 
-func _spawn_dummy_players() -> void:
-	# Spawn 5 dummy remote players at startup for testing
-	var colors = [
-		Color.RED, Color.BLUE, Color.GREEN, Color.YELLOW, Color.PURPLE
-	]
-	var names = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]
-	for i in range(5):
-		var pid = i + 2  # player IDs 2-6, local player is 1
-		player_states[pid] = {
-			"position": Vector3(randf_range(-10, 10), 1.0, randf_range(-10, 10)),
-			"rotation": Vector2(randf_range(-PI, PI), 0.0),
-			"health": 100,
-			"name": names[i],
-			"color": colors[i],
-			"player_id": pid
-		}
-		emit_signal("player_joined", pid, player_states[pid])
+	var buf := PackedByteArray()
+	buf.append(0x02)
+	buf.append_array(_pack_u16(input_seq))
+	buf.append_array(_pack_f32_be(yaw))
+	buf.append_array(_pack_f32_be(pitch))
+	buf.append(_i8_to_u8(move_x))
+	buf.append(_i8_to_u8(move_z))
 
-func _stub_loopback(msg: Dictionary) -> void:
-	# Simulates server echo for local testing
-	# Remove when Rust server is connected
-	pass
+	udp.put_packet(buf)
 
-func _default_player_state(player_id: int) -> Dictionary:
-	return {
-		"position": Vector3.ZERO,
-		"rotation": Vector2.ZERO,
-		"health": 100,
-		"name": "Player%d" % player_id,
-		"color": Color.WHITE,
-		"player_id": player_id
-	}
+# -------------------------------------------------------
+# UDP IN: WorldState (0x11)
+# Layout: [type:u8, count:u8, then count x 22 bytes]
+# Per player: [player_id:u16, pos_x:f32, pos_y:f32, pos_z:f32, yaw:f32, pitch:f32]
+# -------------------------------------------------------
+func _poll_udp():
+	if udp == null:
+		return
+	while udp.get_available_packet_count() > 0:
+		var packet = udp.get_packet()
+		if packet.size() < 2 or packet[0] != 0x11:
+			continue
+		_handle_world_state(packet)
+
+func _handle_world_state(packet: PackedByteArray):
+	var player_count = packet[1]
+	var expected = 2 + player_count * 22
+	if packet.size() != expected:
+		push_warning("WorldState size mismatch: got %d, expected %d" % [packet.size(), expected])
+		return
+
+	var offset = 2
+	for i in range(player_count):
+		var pid   = _unpack_u16(packet, offset);    offset += 2
+		var px    = _unpack_f32_be(packet, offset); offset += 4
+		var py    = _unpack_f32_be(packet, offset); offset += 4
+		var pz    = _unpack_f32_be(packet, offset); offset += 4
+		var yaw   = _unpack_f32_be(packet, offset); offset += 4
+		var pitch = _unpack_f32_be(packet, offset); offset += 4
+
+		if pid == my_player_id:
+			_reconcile_local(Vector3(px, py, pz))
+		else:
+			_apply_remote(pid, Vector3(px, py, pz), yaw)
+
+func _reconcile_local(server_pos: Vector3):
+	if local_player == null:
+		return
+	var drift = server_pos.distance_to(local_player.global_position)
+	if drift > 0.5:
+		local_player.global_position = local_player.global_position.lerp(server_pos, 0.3)
+
+func _apply_remote(pid: int, pos: Vector3, yaw: float):
+	if not remote_players.has(pid):
+		emit_signal("player_joined", pid)
+		return
+	var rp = remote_players[pid]
+	if is_instance_valid(rp):
+		rp.apply_state(pos, yaw)
+
+# -------------------------------------------------------
+# Called by LocalPlayer.gd and Main.gd after spawning nodes
+# -------------------------------------------------------
+func register_local_player(node: Node):
+	local_player = node
+
+func register_remote_player(pid: int, node: Node):
+	remote_players[pid] = node
+
+# -------------------------------------------------------
+# Byte helpers - all big-endian to match Rust's to_be_bytes()
+# -------------------------------------------------------
+func _pack_u16(val: int) -> PackedByteArray:
+	var b := PackedByteArray()
+	b.append((val >> 8) & 0xFF)
+	b.append(val & 0xFF)
+	return b
+
+func _unpack_u16(buf: PackedByteArray, offset: int) -> int:
+	return (buf[offset] << 8) | buf[offset + 1]
+
+func _pack_f32_be(val: float) -> PackedByteArray:
+	# Encode as LE first, then reverse bytes to get BE
+	var tmp := PackedByteArray()
+	tmp.resize(4)
+	tmp.encode_float(0, val)
+	var be := PackedByteArray()
+	be.append(tmp[3]); be.append(tmp[2]); be.append(tmp[1]); be.append(tmp[0])
+	return be
+
+func _unpack_f32_be(buf: PackedByteArray, offset: int) -> float:
+	var tmp := PackedByteArray()
+	tmp.append(buf[offset + 3]); tmp.append(buf[offset + 2])
+	tmp.append(buf[offset + 1]); tmp.append(buf[offset + 0])
+	return tmp.decode_float(0)
+
+func _i8_to_u8(val: int) -> int:
+	# Clamp to -1/0/1 then cast to u8 (matches Rust's i8 as u8)
+	val = clampi(val, -1, 1)
+	if val < 0:
+		return val + 256  # -1 -> 255
+	return val
