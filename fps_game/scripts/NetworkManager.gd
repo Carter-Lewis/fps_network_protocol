@@ -46,15 +46,24 @@ func _start_udp():
 # Step 2: TCP connect and send Connect (0x01)
 # -------------------------------------------------------
 func _connect_tcp():
+	print("Connecting to: ", server_ip, ":", tcp_port)
 	tcp = StreamPeerTCP.new()
+	tcp.set_no_delay(true) # Might help with slow connection to the cloud (?)
 	tcp.connect_to_host(server_ip, tcp_port)
 	await _wait_tcp_connected()
 	_send_connect()
 
+# Rewriting this function to give better feedback if connction issues
 func _wait_tcp_connected():
+	var timeout := 10.0  # seconds
+	var elapsed := 0.0
 	while tcp.get_status() == StreamPeerTCP.STATUS_CONNECTING:
-		tcp.poll()  # Required in Godot 4 to advance connection state
+		tcp.poll()
 		await get_tree().process_frame
+		elapsed += get_process_delta_time()
+		if elapsed >= timeout:
+			push_error("TCP connection timed out")
+			return
 	if tcp.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 		push_error("TCP connection failed")
 
