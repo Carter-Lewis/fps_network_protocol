@@ -44,4 +44,5 @@ func _update_drift_display() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_F2:
-			print("Drift log export not implemented yet")
+			NetworkManager.export_drift_csv()
+			drift_ui.text = "Drift log saved!"
