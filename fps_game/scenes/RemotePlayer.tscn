@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://kgs5d7ag6bd2"]
 
 [ext_resource type="Script" uid="uid://bq0daqi3844lb" path="res://scripts/RemotePlayer.gd" id="1"]
+[ext_resource type="ArrayMesh" uid="uid://cvxoh16e7eu5f" path="res://assets/animal-monkey.obj" id="2_3fgre"]
 
 [sub_resource type="CapsuleMesh" id="player_mesh"]
 radius = 0.4
@@ -20,6 +21,7 @@ collision_layer = 2
 script = ExtResource("1")
 
 [node name="PlayerMesh" type="MeshInstance3D" parent="." unique_id=2012918609]
+visible = false
 mesh = SubResource("player_mesh")
 surface_material_override/0 = SubResource("player_mat")
 
@@ -41,3 +43,6 @@ mesh = SubResource("health_bar_mesh")
 [node name="Bar" type="MeshInstance3D" parent="HealthBar" unique_id=350897046]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0.015)
 mesh = SubResource("health_bar_mesh")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=488415484]
+mesh = ExtResource("2_3fgre")
