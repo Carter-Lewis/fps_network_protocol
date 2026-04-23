@@ -15,6 +15,8 @@ Cargo.lock
 
 game-server-key.pem
 
+infra/instance-id.txt
+
 # Added by cargo
 
 /target
