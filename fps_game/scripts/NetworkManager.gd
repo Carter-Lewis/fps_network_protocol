@@ -1,6 +1,6 @@
 extends Node
 
-@export var use_cloud := false
+@export var use_cloud := true
 
 const CLOUD_IP := "3.218.9.34"
 const LOCAL_IP := "127.0.0.1"
