@@ -6,9 +6,18 @@ const CLOUD_IP := "3.218.9.34"
 const LOCAL_IP := "127.0.0.1"
 const TOKYO_IP := "57.181.105.56"
 
+enum Server { CLOUD, LOCAL, TOKYO }
+
+var active_server := Server.CLOUD
 # --- Config ---
 var server_ip: String:
-	get: return CLOUD_IP if use_cloud else LOCAL_IP
+	get: 
+		match active_server:
+			Server.CLOUD: return CLOUD_IP
+			Server.LOCAL: return LOCAL_IP
+			Server.TOKYO: return TOKYO_IP
+			_: return LOCAL_IP
+
 var tcp_port := 7777
 var udp_port_server := 7778
 
@@ -61,7 +70,7 @@ func _connect_tcp():
 
 # Rewriting this function to give better feedback if connction issues
 func _wait_tcp_connected():
-	var timeout := 10.0  # seconds
+	var timeout := 1.0  # seconds
 	var elapsed := 0.0
 	while tcp.get_status() == StreamPeerTCP.STATUS_CONNECTING:
 		tcp.poll()
