@@ -4,7 +4,7 @@ extends Node
 
 const CLOUD_IP := "3.218.9.34"
 const LOCAL_IP := "127.0.0.1"
-const TOKYO_IP := "13.231.207.25"
+const TOKYO_IP := "57.181.105.56"
 
 # --- Config ---
 var server_ip: String:
