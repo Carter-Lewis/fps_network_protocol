@@ -215,6 +215,7 @@ func _handle_player_left(packet: PackedByteArray):
 		print("[-] Player ", pid, " left, node despawned")
 
 # reconcile local player position against server, log drift
+# reconcile local player position against server, log drift
 func _reconcile_local(server_pos: Vector3):
 	if local_player == null:
 		return
@@ -222,7 +223,8 @@ func _reconcile_local(server_pos: Vector3):
 	var elapsed = (Time.get_ticks_msec() / 1000.0) - _start_time
 	_drift_log.append({"time": elapsed, "player_id": my_player_id, "drift": drift})
 	if drift > 0.5:
-		local_player.global_position = local_player.global_position.lerp(server_pos, 0.3)
+		var corrected = Vector3(server_pos.x, local_player.global_position.y, server_pos.z)
+		local_player.global_position = local_player.global_position.lerp(corrected, 0.3)
 
 # apply server position and yaw to a remote player node, log drift
 func _apply_remote(pid: int, pos: Vector3, yaw: float):

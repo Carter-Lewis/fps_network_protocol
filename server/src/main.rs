@@ -29,60 +29,91 @@ fn handle_client(mut stream: TcpStream, players: Players) {
     println!("[+] Client connected: {}", peer);
 
     let mut buf = [0u8; 512];
+    let mut my_player_id: Option<u16> = None;
 
-    match stream.read(&mut buf) {
-        Ok(0) => {
-            println!("[-] Client disconnected: {}", peer);
-        }
-        Ok(n) => {
-            // First byte tells message type
-            let msg_type = buf[0];
+    // loop to keep connection alive and detect disconnect
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                println!("[-] Client disconnected: {}", peer);
+                break;
+            }
+            Ok(n) => {
+                let msg_type = buf[0];
 
-            if msg_type == MSG_CONNECT {
-                if let Some(connect) = Connect::deserialize(&buf[..n]) {
-                    let player_id = NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed);
+                if msg_type == MSG_CONNECT {
+                    if let Some(connect) = Connect::deserialize(&buf[..n]) {
+                        let player_id = NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed);
 
-                    println!(
-                        "[+] Assigned PlayerID {} (client UDP port {})",
-                        player_id, connect.udp_port
-                    );
+                        println!(
+                            "[+] Assigned PlayerID {} (client UDP port {})",
+                            player_id, connect.udp_port
+                        );
 
-                    // Add player to shared state
-                    let mut players = players.lock().unwrap();
+                        my_player_id = Some(player_id);
 
-                    players.insert(player_id, Player {
-                        id: player_id,
+                        let mut players = players.lock().unwrap();
+                        players.insert(player_id, Player {
+                            id: player_id,
+                            pos: [0.0, 0.0, 0.0],
+                            yaw: 0.0,
+                            pitch: 0.0,
+                            udp_addr: None,
+                        });
 
-                        // Start at origin
-                        pos: [0.0, 0.0, 0.0],
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        udp_addr: None,
-                    });
-
-                    // Send connected response
-                    let response = Connected { player_id };
-                    stream.write_all(&response.serialize()).unwrap();
+                        let response = Connected { player_id };
+                        if let Err(e) = stream.write_all(&response.serialize()) {
+                            println!("[!] Failed to send Connected response: {}", e);
+                            break;
+                        }
+                        println!("[+] Sent CONNECTED with Player ID {}", player_id);
+                    }
                 }
             }
-        }
-        // Ok(n) => {
-            // println!("[-] TCP client disconnected: {}", peer);
-            // let msg = String::from_utf8_lossy(&buf[..n]);
-            // println!("[>] Received from {}: {}", peer, msg.trim());
-
-            // Echo it back with a prefix
-            // let response = format!("SERVER ECHO: {}", msg.trim());
-            // if stream.write_all(response.as_bytes()).is_err() {
-                // break;
-            // }
-        // }
-        Err(e) => {
-            println!("[!] Error reading from {}: {}", peer, e);
-            // break;
+            Err(e) => {
+                println!("[!] Error reading from {}: {}", peer, e);
+                break;
+            }
         }
     }
 
+    // cleanup after disconnect
+    if let Some(id) = my_player_id {
+        let mut players_guard = match players.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                println!("[!] Failed to lock players on disconnect: {}", e);
+                return;
+            }
+        };
+
+        players_guard.remove(&id);
+        println!("[-] Removed player {} from HashMap. Players remaining: {}", id, players_guard.len());
+
+        // TODO: reuse a shared UDP socket instead of binding a new one per disconnect
+        let socket = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                println!("[!] Failed to bind UDP socket for disconnect notify: {}", e);
+                return;
+            }
+        };
+
+        // build player left packet (0x12 + departed player id)
+        let mut notify = Vec::new();
+        notify.push(0x12u8);
+        notify.extend_from_slice(&id.to_be_bytes());
+
+        // notify remaining players, log and continue if one fails
+        for player in players_guard.values() {
+            if let Some(addr) = player.udp_addr {
+                match socket.send_to(&notify, addr) {
+                    Ok(_) => println!("[-] Notified player {} of disconnect", player.id),
+                    Err(e) => println!("[!] Failed to notify player {} of disconnect: {}", player.id, e),
+                }
+            }
+        }
+    }
 }
 
 
