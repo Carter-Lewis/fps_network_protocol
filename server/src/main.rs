@@ -43,8 +43,10 @@ fn game_loop(players: Arc<Mutex<HashMap<u16, Player>>>) {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_millis(50));
+
         }
+        // moved sleep outside lock scope to avoid holding mutex
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -118,6 +120,8 @@ fn handle_client(mut stream: TcpStream, next_player_id: Arc<Mutex<u16>>, players
     println!("[+] Client connected: {}", peer);
 
     let mut buf = [0u8; 512];
+    let mut my_player_id: Option<u16> = None;
+
     loop {
         match stream.read(&mut buf) {
             Ok(0) => {
@@ -156,6 +160,8 @@ fn handle_client(mut stream: TcpStream, next_player_id: Arc<Mutex<u16>>, players
                             id
                         };
 
+                        my_player_id = Some(player_id);
+
                         //store player
                         let player = Player {
                             id: player_id,
@@ -193,6 +199,48 @@ fn handle_client(mut stream: TcpStream, next_player_id: Arc<Mutex<u16>>, players
             Err(e) => {
                 println!("[!] Error reading from {}: {}", peer, e);
                 break;
+            }
+        }
+    }
+
+    // Cleanup after loop exits (disconnect or error)
+    if let Some(id) = my_player_id {
+
+        // Get the player list
+        let mut players_guard = match players.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                println!("[!] Failed to lock players on disconnect: {}", e);
+                return;
+            }
+        };
+
+        // Remove the disconnected player from the HashMap
+        players_guard.remove(&id);
+        println!("[-] Removed player {} from HashMap. Players remaining: {}", id, players_guard.len());
+
+        // TODO: this is sloppy, should reuse a shared UDP
+        // TODO: socket instead of binding a new one per disconnect, but leaving to avoid merge conflict for today
+        // Bind a temp socket to send disconnect notifications
+        let socket = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                println!("[!] Failed to bind UDP socket for disconnect notify: {}", e);
+                return;
+            }
+        };
+
+        // Build the player left packet (0x12 + departed player's ID)
+        let mut notify = Vec::new();
+        notify.push(0x12u8);
+        notify.extend_from_slice(&id.to_be_bytes());
+
+        // Notify all remaining players, log and continue if one fails
+        for player in players_guard.values() {
+            let addr = format!("{}:{}", player.ip, player.udp_port);
+            match socket.send_to(&notify, &addr) {
+                Ok(_) => println!("[-] Notified player {} of disconnect", player.id),
+                Err(e) => println!("[!] Failed to notify player {} of disconnect: {}", player.id, e),
             }
         }
     }
