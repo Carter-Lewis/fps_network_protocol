@@ -6,3 +6,6 @@ edition = "2021"
 [[bin]]
 name = "game-server"
 path = "src/main.rs"
+
+[dependencies]
+protocol = { path = "../protocol" }
