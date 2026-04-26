@@ -42,11 +42,10 @@ theme_override_font_sizes/font_size = 48
 text = "Networking Game"
 horizontal_alignment = 1
 
-[node name="CheckBox" type="CheckBox" parent="CanvasLayer/VBoxContainer" unique_id=112973860]
+[node name="OptionButton" type="OptionButton" parent="CanvasLayer/VBoxContainer" unique_id=102020558]
 layout_mode = 2
 theme_override_colors/font_color = Color(0, 0, 0, 1)
 theme_override_font_sizes/font_size = 24
-text = "Use Cloud Server (unchecked = Tokyo)"
 alignment = 1
 icon_alignment = 1
 

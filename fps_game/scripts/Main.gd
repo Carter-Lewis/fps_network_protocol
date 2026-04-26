@@ -40,9 +40,3 @@ func _update_drift_display() -> void:
 		drift_ui.text = "Connecting..."
 	else:
 		drift_ui.text = "Connected | player_id = %d" % NetworkManager.my_player_id
-
-func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed:
-		if event.keycode == KEY_F2:
-			NetworkManager.export_drift_csv()
-			drift_ui.text = "Drift log saved!"

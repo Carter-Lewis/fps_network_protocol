@@ -37,12 +37,29 @@ var local_player: Node = null
 var remote_players: Dictionary = {}  # player_id (int) -> RemotePlayer node
 
 var _drift_log: Array = []
+var _show_drift_ui := false
 var _start_time: float = 0.0
 
 signal player_joined(player_id: int)
 
 func _ready():
 	_start_time = Time.get_ticks_msec() / 1000.0
+	# wrap in CanvasLayer so it renders over the game
+	var canvas = CanvasLayer.new()
+	canvas.name = "DriftCanvas"
+	add_child(canvas)
+	var label = Label.new()
+	label.name = "DriftLabel"
+	label.anchor_left = 1.0
+	label.anchor_right = 1.0
+	label.anchor_top = 0.0
+	label.anchor_bottom = 0.0
+	label.offset_left = -200.0
+	label.offset_right = -10.0
+	label.offset_top = 10.0
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	label.visible = false
+	canvas.add_child(label)
 
 func connect_to_server():
 	_start_udp()
@@ -94,6 +111,18 @@ func _process(_delta):
 	if my_player_id >= 0:
 		_send_player_input()
 		_poll_udp()
+	# update drift label if visible
+	if _show_drift_ui:
+		_update_drift_label()
+
+# f2 = export csv, f3 = toggle drift ui
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_F2:
+			export_drift_csv()
+		elif event.keycode == KEY_F3:
+			_show_drift_ui = !_show_drift_ui
+			get_node("DriftCanvas/DriftLabel").visible = _show_drift_ui
 
 # tcp in: read connected (0x10) and store assigned player id
 func _poll_tcp():
@@ -191,17 +220,20 @@ func _reconcile_local(server_pos: Vector3):
 		return
 	var drift = server_pos.distance_to(local_player.global_position)
 	var elapsed = (Time.get_ticks_msec() / 1000.0) - _start_time
-	_drift_log.append({"time": elapsed, "drift": drift})
+	_drift_log.append({"time": elapsed, "player_id": my_player_id, "drift": drift})
 	if drift > 0.5:
 		local_player.global_position = local_player.global_position.lerp(server_pos, 0.3)
 
-# apply server position and yaw to a remote player node
+# apply server position and yaw to a remote player node, log drift
 func _apply_remote(pid: int, pos: Vector3, yaw: float):
 	if not remote_players.has(pid):
 		emit_signal("player_joined", pid)
 		return
 	var rp = remote_players[pid]
 	if is_instance_valid(rp):
+		var drift = pos.distance_to(rp.global_position)
+		var elapsed = (Time.get_ticks_msec() / 1000.0) - _start_time
+		_drift_log.append({"time": elapsed, "player_id": pid, "drift": drift})
 		rp.apply_state(pos, yaw)
 
 # called by LocalPlayer.gd and Main.gd after spawning nodes
@@ -244,13 +276,30 @@ func _i8_to_u8(val: int) -> int:
 		return val + 256
 	return val
 
+# export drift log to csv, one row per player per sample
 func export_drift_csv() -> void:
 	var file = FileAccess.open("user://drift_log.csv", FileAccess.WRITE)
 	if file == null:
 		push_error("Failed to open drift log file")
 		return
-	file.store_line("time_seconds,drift_units")
+	file.store_line("time_seconds,player_id,drift_units")
 	for entry in _drift_log:
-		file.store_line("%.3f,%.4f" % [entry["time"], entry["drift"]])
+		file.store_line("%.3f,%d,%.4f" % [entry["time"], entry["player_id"], entry["drift"]])
 	file.close()
 	print("Drift log saved to: ", OS.get_user_data_dir(), "/drift_log.csv")
+
+# build and update the on-screen drift label from recent log entries
+func _update_drift_label():
+	var label = get_node("DriftCanvas/DriftLabel")
+	if _drift_log.is_empty():
+		label.text = "no drift data yet"
+		return
+	# collect most recent drift per player
+	var latest: Dictionary = {}
+	for entry in _drift_log:
+		latest[entry["player_id"]] = entry["drift"]
+	var lines = ["-- drift (F3 to hide) --"]
+	for pid in latest:
+		var tag = "me" if pid == my_player_id else "p%d" % pid
+		lines.append("%s: %.4f" % [tag, latest[pid]])
+	label.text = "\n".join(lines)
