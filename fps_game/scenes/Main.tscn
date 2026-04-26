@@ -113,7 +113,7 @@ script = ExtResource("3")
 shape = SubResource("player_shape")
 
 [node name="CameraMount" type="Node3D" parent="LocalPlayer" unique_id=613269928]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
 
 [node name="Camera3D" type="Camera3D" parent="LocalPlayer/CameraMount" unique_id=1646771825]
 current = true
