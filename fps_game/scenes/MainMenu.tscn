@@ -1,0 +1,55 @@
+[gd_scene format=3 uid="uid://cpuqsv121h5iu"]
+
+[ext_resource type="Script" uid="uid://btnf6rxaged7" path="res://scenes/main_menu.gd" id="1_yqorp"]
+
+[node name="MainMenu" type="Control" unique_id=1351113708]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_yqorp")
+
+[node name="ColorRect" type="ColorRect" parent="." unique_id=1975035687]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.98039216, 0.8156863, 0.76862746, 1)
+
+[node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=631442877]
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer" unique_id=1218184155]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -20.0
+offset_top = -20.0
+offset_right = 20.0
+offset_bottom = 20.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Networking Game" type="Label" parent="CanvasLayer/VBoxContainer" unique_id=892154994]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.008202022, 0.008202025, 0.008202025, 1)
+theme_override_font_sizes/font_size = 48
+text = "Networking Game"
+horizontal_alignment = 1
+
+[node name="OptionButton" type="OptionButton" parent="CanvasLayer/VBoxContainer" unique_id=102020558]
+layout_mode = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_font_sizes/font_size = 24
+alignment = 1
+icon_alignment = 1
+
+[node name="Button" type="Button" parent="CanvasLayer/VBoxContainer" unique_id=2127909879]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+text = "Join Game"

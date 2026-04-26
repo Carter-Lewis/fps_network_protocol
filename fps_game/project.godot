@@ -16,7 +16,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="FPS Networking Demo"
 config/description="Multiplayer FPS - Custom UDP Protocol Demo"
-run/main_scene="res://scenes/Main.tscn"
+run/main_scene="uid://cpuqsv121h5iu"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
 
