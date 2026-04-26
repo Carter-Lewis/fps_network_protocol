@@ -120,8 +120,9 @@ fn main() {
                             // Movement is based on client input, server computes real position
                             let speed = 0.1;
 
-                            p.pos[0] += input.move_x as f32 * speed;
-                            p.pos[2] += input.move_z as f32 * speed;
+                            let yaw = p.yaw;
+                            p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
+                            p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
 
                             // Update camera
                             p.yaw = input.yaw;
