@@ -5,11 +5,15 @@ extends CharacterBody3D
 # by whatever NetworkManager tells it.
 
 @onready var name_label: Label3D = $NameLabel
-@onready var mesh: MeshInstance3D = $PlayerMesh
+@onready var mesh: MeshInstance3D = $MeshInstance3D
 @onready var health_bar: Node3D = $HealthBar
+
 
 var player_id: int = -1
 var current_health: int = 100
+var _stick: MeshInstance3D = null
+var _stick_rest_rotation: Vector3 = Vector3(0.0, 0.0, 0.0)
+
 
 # Interpolation - smooth movement between received state updates
 var _target_position: Vector3 = Vector3.ZERO
@@ -18,15 +22,19 @@ var _interpolation_speed: float = 12.0
 
 func _ready() -> void:
 	add_to_group("remote_players")
+	_spawn_stick()
+	print("RemotePlayer ready, stick: ", _stick)
 
 func setup(pid: int) -> void:
 	player_id = pid
 	name_label.text = "Player%d" % pid
 
-func apply_state(pos: Vector3, yaw: float) -> void:
+func apply_state(pos: Vector3, yaw: float, health: int) -> void:
 	# Called by NetworkManager when a state update arrives for this player
 	_target_position = pos
 	_target_yaw = yaw
+	current_health = health
+	_update_health_bar()
 
 func _physics_process(delta: float) -> void:
 	# Interpolate toward target smoothly to hide packet jitter
@@ -34,7 +42,26 @@ func _physics_process(delta: float) -> void:
 	rotation.y = lerp_angle(rotation.y, _target_yaw, _interpolation_speed * delta)
 
 func _update_health_bar() -> void:
-	if health_bar:
-		var bar = health_bar.get_node_or_null("Bar")
-		if bar:
-			bar.scale.x = float(current_health) / 100.0
+	var bar = health_bar.get_node_or_null("Bar")
+	if bar:
+		var pct = float(current_health) / 100.0
+		bar.scale.x = pct
+		bar.position.x = (1.0 - pct) * 0.5
+
+func _spawn_stick() -> void:
+	var stick_mesh = load("res://assets/resource-wood.obj")
+	_stick = MeshInstance3D.new()
+	_stick.mesh = stick_mesh
+	_stick.position = Vector3(1.0, 2.0, 0.0)
+	_stick.rotation = Vector3(0.0, PI, -PI / 2.0)
+	_stick.scale = Vector3(5.0, 5.0, 5.0)
+	var mat = StandardMaterial3D.new()
+	mat.albedo_color = Color(0.55, 0.35, 0.15)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	_stick.material_override = mat
+	add_child(_stick)
+	
+func play_swing() -> void:
+	var tween = create_tween()
+	tween.tween_property(_stick, "rotation", Vector3(0.0, 0.0, -1.0), 0.1)
+	tween.tween_property(_stick, "rotation", _stick_rest_rotation, 0.15)

@@ -18,13 +18,16 @@ struct Player {
     pos: [f32; 3],
     yaw: f32,
     pitch: f32,
+    health: i32,
+    alive: bool,
     udp_addr: Option<SocketAddr>,
+    tcp_stream: Option<Arc<Mutex<TcpStream>>>,
 }
 
 // Shared game state
 type Players = Arc<Mutex<HashMap<u16, Player>>>;
 
-fn handle_client(mut stream: TcpStream, players: Players) {
+fn handle_client(mut stream: TcpStream, players: Players, udp: Arc<UdpSocket>) {
     let peer = stream.peer_addr().unwrap();
     println!("[+] Client connected: {}", peer);
 
@@ -58,7 +61,10 @@ fn handle_client(mut stream: TcpStream, players: Players) {
                             pos: [0.0, 0.0, 0.0],
                             yaw: 0.0,
                             pitch: 0.0,
+                            health: 100,
+                            alive: true,
                             udp_addr: None,
+                            tcp_stream: Some(Arc::new(Mutex::new(stream.try_clone().unwrap()))),
                         });
 
                         let response = Connected { player_id };
@@ -70,32 +76,79 @@ fn handle_client(mut stream: TcpStream, players: Players) {
                     }
                 } else if msg_type == MSG_SWING {
                     if let Some(swing) = Swing::deserialize(&buf[..n]) {
-                        let players = players.lock().unwrap();
-                        if let Some(attacker) = players.get(&swing.player_id) {
-                            let attacker_pos = attacker.pos;
+                        let hits: Vec<u16> = {
+                            let players_guard = players.lock().unwrap();
+                            if let Some(attacker) = players_guard.get(&swing.player_id) {
+                                let attacker_pos = attacker.pos;
 
-                            // See if attack hits
-                            let mut hits: Vec<u16> = Vec::new();
-                            for target in players.values() {
+                                // See if attack hits
+                                let mut hits = Vec::new();
+                                for target in players_guard.values() {
 
-                                // Don't let players hit themselves
-                                if target.id == swing.player_id {
-                                    continue;
+                                    // Don't let players hit themselves
+                                    if target.id == swing.player_id { continue; }
+
+                                    let dx = attacker_pos[0] - target.pos[0];
+                                    let dy = attacker_pos[1] - target.pos[1];
+                                    let dz = attacker_pos[2] - target.pos[2];
+                                    let dist = (dx*dx + dy*dy + dz*dz).sqrt();
+                                    if dist <= 2.5 {
+                                        hits.push(target.id);
+                                        println!("[!] Player {} hit player {} (dist {:.2})", swing.player_id, target.id, dist);
+                                    }
                                 }
-                                let dx = attacker_pos[0] - target.pos[0];
-                                let dy = attacker_pos[1] - target.pos[1];
-                                let dz = attacker_pos[2] - target.pos[2];
-                                let dist = (dx*dx + dy*dy + dz*dz).sqrt();
-                                if dist <= 2.5 {
-                                    hits.push(target.id);
-                                    println!("[!] Player {} hit player {} (dist {:.2})", swing.player_id, target.id, dist);
+                                hits
+                            } else {
+                                Vec::new()
+                            }
+                        };
+
+                        // Apply damage
+                        for hit_id in hits {
+                            let mut players_guard = players.lock().unwrap();
+                            if let Some(target) = players_guard.get_mut(&hit_id) {
+                                target.health -= 20;
+                                let new_health = target.health;
+                                let alive = new_health > 0;
+                                target.alive = alive;
+
+                                // Send health update to hit player
+                                if let Some(tcp) = &target.tcp_stream {
+                                    let msg = HealthUpdate { player_id: hit_id, health: new_health };
+                                    let _ = tcp.lock().unwrap().write_all(&msg.serialize());
+                                }
+
+                                // send death notice if health hits 0
+                                if !alive {
+                                    if let Some(tcp) = &target.tcp_stream {
+                                        let msg = YouDied { player_id: hit_id };
+                                        let _ = tcp.lock().unwrap().write_all(&msg.serialize());
+                                    }
+                                    println!("[!] Player {} died", hit_id);
                                 }
                             }
-                            drop(players);
-                            // apply damage — health tracking comes next
-                            for _hit_id in hits {
-                                // TODO: apply 20 damage to hit_id
+                        }
+
+                        // notify all other players of swing for animation
+                        let notify = SwingNotify { player_id: swing.player_id };
+                        let notify_bytes = notify.serialize();
+                        let players_guard = players.lock().unwrap();
+                        for other in players_guard.values() {
+                            if other.id != swing.player_id {
+                                if let Some(addr) = other.udp_addr {
+                                    let _ = udp.send_to(&notify_bytes, addr);
+                                }
                             }
+                        }
+                    }
+                } else if msg_type == MSG_RESPAWN_REQUEST {
+                    if let Some(req) = RespawnRequest::deserialize(&buf[..n]) {
+                        let mut players = players.lock().unwrap();
+                        if let Some(p) = players.get_mut(&req.player_id) {
+                            p.health = 100;
+                            p.alive = true;
+                            p.pos = [0.0, 0.0, 0.0];
+                            println!("[+] Player {} has respawned", req.player_id);
                         }
                     }
                 }
@@ -120,14 +173,8 @@ fn handle_client(mut stream: TcpStream, players: Players) {
         players_guard.remove(&id);
         println!("[-] Removed player {} from HashMap. Players remaining: {}", id, players_guard.len());
 
-        // TODO: reuse a shared UDP socket instead of binding a new one per disconnect
-        let socket = match UdpSocket::bind("0.0.0.0:0") {
-            Ok(s) => s,
-            Err(e) => {
-                println!("[!] Failed to bind UDP socket for disconnect notify: {}", e);
-                return;
-            }
-        };
+        // reuse shared UDP socket for disconnect notify
+        let socket = &udp;
 
         // build player left packet (0x12 + departed player id)
         let mut notify = Vec::new();
@@ -156,15 +203,14 @@ fn main() {
     println!("[*] TCP listening on port 7777");
 
     // UDP socket (game data)
-    let udp_socket = UdpSocket::bind("0.0.0.0:7778").expect("Failed to bind UDP socket");
-
+    let udp_socket = Arc::new(UdpSocket::bind("0.0.0.0:7778").expect("Failed to bind UDP socket"));
     udp_socket.set_nonblocking(true).unwrap();
     println!("[*] UDP listening on port 7778");
 
     // Thread to handle UDP input
     // get PlayerInput packets and update player positions
     let players_clone = players.clone();
-    let udp_socket_clone = udp_socket.try_clone().unwrap();
+    let udp_socket_clone = Arc::clone(&udp_socket);
 
     thread::spawn(move || {
         let mut buf = [0u8; 1024];
@@ -178,19 +224,25 @@ fn main() {
                         // Find player using UDP address
                         let player = players.values_mut().find(|p| p.udp_addr == Some(addr));
                         if let Some(p) = player {
-                            // Movement is based on client input, server computes real position
-                            let speed = 0.1;
 
-                            let yaw = p.yaw;
-                            p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
-                            p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
-                            p.pos[1] = input.pos_y;
+                            // Don't process input from dead players
+                            if !p.alive {
+                                // skip
+                            } else {
+                                // Movement is based on client input, server computes real position
+                                let speed = 0.1;
 
-                            // Update camera
-                            p.yaw = input.yaw;
-                            p.pitch = input.pitch;
+                                let yaw = p.yaw;
+                                p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
+                                p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
+                                p.pos[1] = input.pos_y;
 
-                            println!("[>] Player {} moved to {:?}", p.id, p.pos);
+                                // Update camera
+                                p.yaw = input.yaw;
+                                p.pitch = input.pitch;
+
+                                println!("[>] Player {} moved to {:?}", p.id, p.pos);
+                            }
                         } else {
                             // UDP address first time
                             // Bind to player
@@ -208,7 +260,7 @@ fn main() {
     // Thread to broadcast world state
     // Sends full game state to all players
     let players_clone = players.clone();
-    let udp_socket_clone = udp_socket.try_clone().unwrap();
+    let udp_socket_clone = Arc::clone(&udp_socket);
 
     thread::spawn(move || {
         loop {
@@ -216,17 +268,20 @@ fn main() {
 
             // Build world state from current data
             let world = WorldState {
-                players: players.values().map(|p| PlayerState {
-                    player_id: p.id,
+                players: players.values()
+                    .filter(|p| p.udp_addr.is_some() && p.alive)
+                    .map(|p| PlayerState {
+                        player_id: p.id,
 
-                    // Actual positions
-                    pos_x: p.pos[0],
-                    pos_y: p.pos[1],
-                    pos_z: p.pos[2],
+                        // Actual positions
+                        pos_x: p.pos[0],
+                        pos_y: p.pos[1],
+                        pos_z: p.pos[2],
 
-                    yaw: p.yaw,
-                    pitch: p.pitch,
-                }).collect(),
+                        yaw: p.yaw,
+                        pitch: p.pitch,
+                        health: p.health,
+                    }).collect(),
             };
 
             let bytes = world.serialize();
@@ -244,18 +299,12 @@ fn main() {
         }
     });
 
-    // let port = std::env::var("GAME_PORT").unwrap_or_else(|_| "7777".to_string());
-    // let addr = format!("0.0.0.0:{}", port);
-
-    // let listener = TcpListener::bind(&addr).expect("Failed to bind to address");
-    // println!("[*] Game server listening on {}", addr);
-
     for stream in tcp_listener.incoming() {
         match stream {
             Ok(stream) => {
                 let players_clone = players.clone();
-
-                thread::spawn(move || handle_client(stream, players_clone));
+                let udp_clone = Arc::clone(&udp_socket);
+                thread::spawn(move || handle_client(stream, players_clone, udp_clone));
             }
             Err(e) => {
                 println!("[!] Connection error: {}", e);

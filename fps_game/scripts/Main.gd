@@ -21,16 +21,18 @@ func _process(delta: float) -> void:
 
 func _on_player_joined(player_id: int) -> void:
 	if player_id == NetworkManager.my_player_id:
-		return  # Don't spawn a node for ourselves
+		return
+	# re-spawn if node was previously despawned (e.g. after death)
 	if _remote_player_nodes.has(player_id):
-		return  # Already spawned
-
+		var existing = _remote_player_nodes[player_id]
+		if is_instance_valid(existing):
+			return  # already alive, skip
+		else:
+			_remote_player_nodes.erase(player_id)  # stale, clean up and re-spawn
 	var player = remote_player_scene.instantiate()
 	remote_players_container.add_child(player)
 	player.setup(player_id)
 	_remote_player_nodes[player_id] = player
-
-	# Register with NetworkManager so it can call apply_state() on this node
 	NetworkManager.register_remote_player(player_id, player)
 	print("Player joined: ", player_id)
 

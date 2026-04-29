@@ -8,9 +8,11 @@ pub const MSG_CONNECT: u8 = 0x01; // Client -> Server (TCP)
 pub const MSG_CONNECTED: u8 = 0x10; // Server -> Client (TCP)
 pub const MSG_PLAYER_INPUT: u8 = 0x02; // Client -> Server (UDP)
 pub const MSG_WORLD_STATE: u8 = 0x11; // Server -> Client (UDP)
-
 pub const MSG_SWING: u8 = 0x03;
-
+pub const MSG_SWING_NOTIFY: u8 = 0x04;
+pub const MSG_HEALTH_UPDATE: u8 = 0x13;
+pub const MSG_YOU_DIED: u8 = 0x14;
+pub const MSG_RESPAWN_REQUEST: u8 = 0x15;
 
 // Connect message sent by client when first joins server
 // Tells server which UDP port the client will listen on
@@ -164,6 +166,7 @@ pub struct PlayerState{
 
     pub yaw: f32,
     pub pitch: f32,
+    pub health: i32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -181,6 +184,7 @@ impl WorldState {
     // [10-13] = PosZ
     // [14-17] = Yaw
     // [18-21] = Pitch
+    // [22-25] = Health
 
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -197,6 +201,7 @@ impl WorldState {
 
             buf.extend(&p.yaw.to_be_bytes());
             buf.extend(&p.pitch.to_be_bytes());
+            buf.extend(&p.health.to_be_bytes());
         }
         buf
     }
@@ -214,7 +219,7 @@ impl WorldState {
         let player_count = buf[1] as usize;
 
         // Each player takes 22 bytes
-        let expected_size = 2 + player_count * 22;
+        let expected_size = 2 + player_count * 26;
 
         // Make sure buffer is big enough
         if buf.len() != expected_size {
@@ -244,6 +249,8 @@ impl WorldState {
 
             let pitch = f32::from_be_bytes(buf[offset..offset + 4].try_into().ok()?);
             offset += 4;
+            let health = i32::from_be_bytes(buf[offset..offset + 4].try_into().ok()?);
+            offset += 4;
 
             players.push(PlayerState {
                 player_id,
@@ -252,6 +259,7 @@ impl WorldState {
                 pos_z,
                 yaw,
                 pitch,
+                health,
             });
         }
         Some(Self { players })
@@ -277,6 +285,103 @@ impl Swing {
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
         if buf.len() < 3 { return None; }
         if buf[0] != MSG_SWING { return None; }
+        let player_id = u16::from_be_bytes([buf[1], buf[2]]);
+        Some(Self { player_id })
+    }
+}
+
+
+#[derive(Debug, PartialEq)]
+pub struct SwingNotify {
+    pub player_id: u16,
+}
+
+impl SwingNotify {
+    // [0] = MSG_SWING_NOTIFY
+    // [1-2] = player_id
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3);
+        buf.push(MSG_SWING_NOTIFY);
+        buf.extend(&self.player_id.to_be_bytes());
+        buf
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 3 { return None; }
+        if buf[0] != MSG_SWING_NOTIFY { return None; }
+        let player_id = u16::from_be_bytes([buf[1], buf[2]]);
+        Some(Self { player_id })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct HealthUpdate {
+    pub player_id: u16,
+    pub health: i32,
+}
+
+impl HealthUpdate {
+    // [0] = MSG_HEALTH_UPDATE
+    // [1-2] = player_id
+    // [3-6] = health (i32 be)
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(7);
+        buf.push(MSG_HEALTH_UPDATE);
+        buf.extend(&self.player_id.to_be_bytes());
+        buf.extend(&self.health.to_be_bytes());
+        buf
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 7 { return None; }
+        if buf[0] != MSG_HEALTH_UPDATE { return None; }
+        let player_id = u16::from_be_bytes([buf[1], buf[2]]);
+        let health = i32::from_be_bytes([buf[3], buf[4], buf[5], buf[6]]);
+        Some(Self { player_id, health })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct YouDied {
+    pub player_id: u16,
+}
+
+impl YouDied {
+    // [0] = MSG_YOU_DIED
+    // [1-2] = player_id
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3);
+        buf.push(MSG_YOU_DIED);
+        buf.extend(&self.player_id.to_be_bytes());
+        buf
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 3 { return None; }
+        if buf[0] != MSG_YOU_DIED { return None; }
+        let player_id = u16::from_be_bytes([buf[1], buf[2]]);
+        Some(Self { player_id })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RespawnRequest {
+    pub player_id: u16,
+}
+
+impl RespawnRequest {
+    // [0] = MSG_RESPAWN_REQUEST
+    // [1-2] = player_id
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3);
+        buf.push(MSG_RESPAWN_REQUEST);
+        buf.extend(&self.player_id.to_be_bytes());
+        buf
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 3 { return None; }
+        if buf[0] != MSG_RESPAWN_REQUEST { return None; }
         let player_id = u16::from_be_bytes([buf[1], buf[2]]);
         Some(Self { player_id })
     }
@@ -354,6 +459,7 @@ mod tests {
                     pos_z: 3.0,
                     yaw: 0.5,
                     pitch: -0.5,
+                    health: 100,
                 },
                 PlayerState {
                     player_id: 2,
@@ -362,6 +468,7 @@ mod tests {
                     pos_z: 6.0,
                     yaw: 1.5,
                     pitch: -1.0,
+                    health: 100,
                 },
             ],
         };

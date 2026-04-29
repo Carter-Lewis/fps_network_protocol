@@ -10,6 +10,10 @@ height = 1.8
 [sub_resource type="BoxMesh" id="health_bar_mesh"]
 size = Vector3(0.8, 0.08, 0.02)
 
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_3fgre"]
+shading_mode = 0
+albedo_color = Color(0, 1, 0, 1)
+
 [node name="RemotePlayer" type="CharacterBody3D" unique_id=143288618]
 collision_layer = 2
 script = ExtResource("1")
@@ -26,12 +30,10 @@ text = "Player"
 [node name="HealthBar" type="Node3D" parent="." unique_id=1413146360]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0)
 
-[node name="Background" type="MeshInstance3D" parent="HealthBar" unique_id=702894797]
-mesh = SubResource("health_bar_mesh")
-
 [node name="Bar" type="MeshInstance3D" parent="HealthBar" unique_id=350897046]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0.015)
 mesh = SubResource("health_bar_mesh")
+surface_material_override/0 = SubResource("StandardMaterial3D_3fgre")
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=488415484]
 transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0, 1.1, 0)

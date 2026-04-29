@@ -131,14 +131,35 @@ func _poll_tcp():
 	tcp.poll()
 	if tcp.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 		return
-	if tcp.get_available_bytes() < 3:
-		return
-	var type_byte = tcp.get_u8()
-	if type_byte == 0x10:
-		var hi = tcp.get_u8()
-		var lo = tcp.get_u8()
-		my_player_id = (hi << 8) | lo
-		print("Connected! player_id = ", my_player_id)
+	while tcp.get_available_bytes() > 0:
+		var type_byte = tcp.get_u8()
+		if type_byte == 0x10:
+			# connected - 3 bytes total, already read 1
+			if tcp.get_available_bytes() < 2:
+				return
+			var hi = tcp.get_u8()
+			var lo = tcp.get_u8()
+			my_player_id = (hi << 8) | lo
+			print("Connected! player_id = ", my_player_id)
+		elif type_byte == 0x13:
+			# health update - 6 more bytes
+			if tcp.get_available_bytes() < 6:
+				return
+			var hi = tcp.get_u8()
+			var lo = tcp.get_u8()
+			var _pid = (hi << 8) | lo
+			var h = tcp.get_u8() << 24 | tcp.get_u8() << 16 | tcp.get_u8() << 8 | tcp.get_u8()
+			if local_player and local_player.has_method("update_health"):
+				local_player.update_health(h)
+		elif type_byte == 0x14:
+			# you died - 2 more bytes
+			if tcp.get_available_bytes() < 2:
+				return
+			var hi = tcp.get_u8()
+			var lo = tcp.get_u8()
+			var _pid = (hi << 8) | lo
+			if local_player and local_player.has_method("on_death"):
+				local_player.on_death()
 
 # udp out: send player input (0x02) every frame
 # layout: [type:u8, seq:u16be, yaw:f32be, pitch:f32be, move_x:i8, move_z:i8]
@@ -175,6 +196,16 @@ func _send_player_input():
 	buf.append(flags)
 	udp.put_packet(buf)
 
+func send_respawn_request() -> void:
+	if tcp == null or my_player_id < 0:
+		return
+	var buf := PackedByteArray()
+	buf.append(0x15)
+	buf.append((my_player_id >> 8) & 0xFF)
+	buf.append(my_player_id & 0xFF)
+	tcp.put_data(buf)
+	print("Sent RespawnRequest for player ", my_player_id)
+
 # udp in: route incoming packets by type
 func _poll_udp():
 	if udp == null:
@@ -188,6 +219,8 @@ func _poll_udp():
 				_handle_world_state(packet)
 			0x12:
 				_handle_player_left(packet)
+			0x04:
+				_handle_swing_notify(packet)
 
 # tcp out: send swing packet (0x03) with our player id
 
@@ -200,27 +233,48 @@ func send_swing() -> void:
 	buf.append(my_player_id & 0xFF)
 	tcp.put_data(buf)
 	print("Sent Swing for player ", my_player_id)
+	
+# udp in: another player swung, play their animation
+func _handle_swing_notify(packet: PackedByteArray):
+	if packet.size() < 3:
+		return
+	var pid = _unpack_u16(packet, 1)
+	if remote_players.has(pid):
+		var rp = remote_players[pid]
+		if is_instance_valid(rp) and rp.has_method("play_swing"):
+			rp.play_swing()
 
 # udp in: parse world state and apply positions to remote players
 # layout: [type:u8, count:u8, then count x 22 bytes per player]
 func _handle_world_state(packet: PackedByteArray):
 	var player_count = packet[1]
-	var expected = 2 + player_count * 22
+	var expected = 2 + player_count * 26
 	if packet.size() != expected:
 		push_warning("WorldState size mismatch: got %d, expected %d" % [packet.size(), expected])
 		return
 	var offset = 2
+	var seen_pids: Array = []
 	for i in range(player_count):
-		var pid   = _unpack_u16(packet, offset);    offset += 2
-		var px    = _unpack_f32_be(packet, offset); offset += 4
-		var py    = _unpack_f32_be(packet, offset); offset += 4
-		var pz    = _unpack_f32_be(packet, offset); offset += 4
-		var yaw   = _unpack_f32_be(packet, offset); offset += 4
-		var pitch = _unpack_f32_be(packet, offset); offset += 4
+		var pid    = _unpack_u16(packet, offset);    offset += 2
+		var px     = _unpack_f32_be(packet, offset); offset += 4
+		var py     = _unpack_f32_be(packet, offset); offset += 4
+		var pz     = _unpack_f32_be(packet, offset); offset += 4
+		var yaw    = _unpack_f32_be(packet, offset); offset += 4
+		var pitch  = _unpack_f32_be(packet, offset); offset += 4
+		var health = _unpack_i32_be(packet, offset); offset += 4
+		seen_pids.append(pid)
 		if pid == my_player_id:
 			_reconcile_local(Vector3(px, py, pz))
 		else:
-			_apply_remote(pid, Vector3(px, py, pz), yaw)
+			_apply_remote(pid, Vector3(px, py, pz), yaw, health)
+			
+	for pid in remote_players.keys():
+		if pid not in seen_pids:
+			var node = remote_players[pid]
+			if is_instance_valid(node):
+				node.queue_free()
+			remote_players.erase(pid)
+			print("[-] Player ", pid, " removed from world state, despawned")
 
 # udp in: despawn remote player node on disconnect (0x12)
 # layout: [type:u8, player_id:u16be]
@@ -248,7 +302,7 @@ func _reconcile_local(server_pos: Vector3):
 		local_player.global_position = local_player.global_position.lerp(corrected, 0.3)
 
 # apply server position and yaw to a remote player node, log drift
-func _apply_remote(pid: int, pos: Vector3, yaw: float):
+func _apply_remote(pid: int, pos: Vector3, yaw: float, health: int):
 	if not remote_players.has(pid):
 		emit_signal("player_joined", pid)
 		return
@@ -257,7 +311,7 @@ func _apply_remote(pid: int, pos: Vector3, yaw: float):
 		var drift = pos.distance_to(rp.global_position)
 		var elapsed = (Time.get_ticks_msec() / 1000.0) - _start_time
 		_drift_log.append({"time": elapsed, "player_id": pid, "drift": drift})
-		rp.apply_state(pos, yaw)
+		rp.apply_state(pos, yaw, health)
 
 # called by LocalPlayer.gd and Main.gd after spawning nodes
 func register_local_player(node: Node):
@@ -297,6 +351,13 @@ func _i8_to_u8(val: int) -> int:
 	val = clampi(val, -1, 1)
 	if val < 0:
 		return val + 256
+	return val
+	
+func _unpack_i32_be(buf: PackedByteArray, offset: int) -> int:
+	var val = (buf[offset] << 24) | (buf[offset+1] << 16) | (buf[offset+2] << 8) | buf[offset+3]
+	# sign extend
+	if val >= 0x80000000:
+		val -= 0x100000000
 	return val
 
 # export drift log to csv, one row per player per sample
