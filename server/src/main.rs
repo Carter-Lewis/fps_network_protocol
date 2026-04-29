@@ -68,6 +68,36 @@ fn handle_client(mut stream: TcpStream, players: Players) {
                         }
                         println!("[+] Sent CONNECTED with Player ID {}", player_id);
                     }
+                } else if msg_type == MSG_SWING {
+                    if let Some(swing) = Swing::deserialize(&buf[..n]) {
+                        let players = players.lock().unwrap();
+                        if let Some(attacker) = players.get(&swing.player_id) {
+                            let attacker_pos = attacker.pos;
+
+                            // See if attack hits
+                            let mut hits: Vec<u16> = Vec::new();
+                            for target in players.values() {
+
+                                // Don't let players hit themselves
+                                if target.id == swing.player_id {
+                                    continue;
+                                }
+                                let dx = attacker_pos[0] - target.pos[0];
+                                let dy = attacker_pos[1] - target.pos[1];
+                                let dz = attacker_pos[2] - target.pos[2];
+                                let dist = (dx*dx + dy*dy + dz*dz).sqrt();
+                                if dist <= 2.5 {
+                                    hits.push(target.id);
+                                    println!("[!] Player {} hit player {} (dist {:.2})", swing.player_id, target.id, dist);
+                                }
+                            }
+                            drop(players);
+                            // apply damage — health tracking comes next
+                            for _hit_id in hits {
+                                // TODO: apply 20 damage to hit_id
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -154,6 +184,7 @@ fn main() {
                             let yaw = p.yaw;
                             p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
                             p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
+                            p.pos[1] = input.pos_y;
 
                             // Update camera
                             p.yaw = input.yaw;

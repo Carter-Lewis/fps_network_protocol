@@ -67,7 +67,7 @@ mesh = SubResource("wall_mesh")
 surface_material_override/0 = SubResource("wall_mat")
 
 [node name="Col" type="CollisionShape3D" parent="Arena/WallNorth" unique_id=2137973768]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1.2124043)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.5451317)
 shape = SubResource("wall_shape")
 
 [node name="WallSouth" type="StaticBody3D" parent="Arena" unique_id=1804539142]
@@ -78,7 +78,7 @@ mesh = SubResource("wall_mesh")
 surface_material_override/0 = SubResource("wall_mat")
 
 [node name="Col" type="CollisionShape3D" parent="Arena/WallSouth" unique_id=1268744551]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1.2559586)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0.73625565)
 shape = SubResource("wall_shape")
 
 [node name="WallEast" type="StaticBody3D" parent="Arena" unique_id=427330199]
@@ -89,7 +89,7 @@ mesh = SubResource("wall_mesh")
 surface_material_override/0 = SubResource("wall_mat")
 
 [node name="Col" type="CollisionShape3D" parent="Arena/WallEast" unique_id=1600428135]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1.2436752)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0.67678833)
 shape = SubResource("wall_shape")
 
 [node name="WallWest" type="StaticBody3D" parent="Arena" unique_id=1585534598]
@@ -100,7 +100,7 @@ mesh = SubResource("wall_mesh")
 surface_material_override/0 = SubResource("wall_mat")
 
 [node name="Col" type="CollisionShape3D" parent="Arena/WallWest" unique_id=1044708882]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1.2798843)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.71484375)
 shape = SubResource("wall_shape")
 
 [node name="RemotePlayers" type="Node3D" parent="." unique_id=523830323]
@@ -118,17 +118,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
 [node name="Camera3D" type="Camera3D" parent="LocalPlayer/CameraMount" unique_id=1646771825]
 current = true
 fov = 90.0
-
-[node name="ShootRay" type="RayCast3D" parent="LocalPlayer/CameraMount/Camera3D" unique_id=127278365]
-target_position = Vector3(0, 0, -100)
-collision_mask = 3
-
-[node name="MuzzleFlash" type="GPUParticles3D" parent="LocalPlayer/CameraMount/Camera3D" unique_id=1656859257]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.5)
-emitting = false
-lifetime = 0.05
-one_shot = true
-explosiveness = 1.0
 
 [node name="HUD" type="CanvasLayer" parent="LocalPlayer" unique_id=1599294017]
 

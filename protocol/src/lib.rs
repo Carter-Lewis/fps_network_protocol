@@ -9,6 +9,8 @@ pub const MSG_CONNECTED: u8 = 0x10; // Server -> Client (TCP)
 pub const MSG_PLAYER_INPUT: u8 = 0x02; // Client -> Server (UDP)
 pub const MSG_WORLD_STATE: u8 = 0x11; // Server -> Client (UDP)
 
+pub const MSG_SWING: u8 = 0x03;
+
 
 // Connect message sent by client when first joins server
 // Tells server which UDP port the client will listen on
@@ -90,17 +92,22 @@ pub struct PlayerInput {
     pub pitch: f32, // Camera vertical rotation (in radians)
     pub move_x: i8,
     pub move_z: i8,
+    pub pos_y: f32,
+    pub jump: bool,
 }
 
 impl PlayerInput {
-    // [0] = MsgType
-    // [1-2] = SeqNum
-    // [3-6] = Yaw
-    // [7-10] = Pitch
-    // [11] = MoveX
-    // [12] = MoveZ
+    /* [0] = MsgType
+       [1-2] = SeqNum
+       [3-6] = Yaw
+       [7-10] = Pitch
+       [11] = MoveX
+       [12] = MoveZ
+       [13-16] = PosY
+       [17] = flags (bit 0 = jump)
+     */
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(13);
+        let mut buf = Vec::with_capacity(18);
         buf.push(MSG_PLAYER_INPUT);
 
         buf.extend(&self.seq_num.to_be_bytes());
@@ -111,12 +118,16 @@ impl PlayerInput {
         buf.push(self.move_x as u8);
         buf.push(self.move_z as u8);
 
+        buf.extend(&self.pos_y.to_be_bytes());
+
+        buf.push(if self.jump { 0x01 } else { 0x00 });
+
         buf
     }
 
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
         // Make sure packet is big enough
-        if buf.len() < 13 {
+        if buf.len() < 18 {
             return None;
         }
         // Validate message type
@@ -128,8 +139,10 @@ impl PlayerInput {
         let pitch = f32::from_be_bytes(buf[7..11].try_into().ok()?);
         let move_x = buf[11] as i8;
         let move_z = buf[12] as i8;
+        let pos_y   = f32::from_be_bytes(buf[13..17].try_into().ok()?);
+        let jump = buf[17] & 0x01 != 0;
 
-        Some(Self { seq_num, yaw, pitch, move_x, move_z })
+        Some(Self { seq_num, yaw, pitch, move_x, move_z, pos_y, jump })
     }
 }
 
@@ -245,8 +258,29 @@ impl WorldState {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub struct Swing {
+    pub player_id: u16,
+}
 
+impl Swing {
+    // [0] = MSG_SWING
+    // [1-2] = player_id
 
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3);
+        buf.push(MSG_SWING);
+        buf.extend(&self.player_id.to_be_bytes());
+        buf
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Option<Self> {
+        if buf.len() < 3 { return None; }
+        if buf[0] != MSG_SWING { return None; }
+        let player_id = u16::from_be_bytes([buf[1], buf[2]]);
+        Some(Self { player_id })
+    }
+}
 
 // Unit Tests
 #[cfg(test)]
@@ -292,6 +326,8 @@ mod tests {
             pitch: -0.7,
             move_x: 1,
             move_z: -1,
+            pos_y: 1.5,
+            jump: false,
         };
 
         let bytes = msg.serialize();
@@ -302,6 +338,8 @@ mod tests {
         assert_eq!(decoded.pitch, msg.pitch);
         assert_eq!(decoded.move_x, msg.move_x);
         assert_eq!(decoded.move_z, msg.move_z);
+        assert_eq!(decoded.pos_y, msg.pos_y);
+        assert_eq!(decoded.jump, msg.jump);
     }
 
     // World State round-trip test

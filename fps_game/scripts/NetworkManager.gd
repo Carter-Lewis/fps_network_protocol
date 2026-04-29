@@ -151,10 +151,18 @@ func _send_player_input():
 	if Input.is_action_pressed("move_left"):     move_x -= 1
 	if Input.is_action_pressed("move_backward"): move_z += 1
 	if Input.is_action_pressed("move_forward"):  move_z -= 1
+	
+	var flags: int = 0
+	if Input.is_action_just_pressed("jump"):
+		flags |= 0x01
+	
 	var yaw: float = local_player.rotation.y
 	var pitch: float = 0.0
 	if local_player.has_node("CameraMount"):
 		pitch = local_player.get_node("CameraMount").rotation.x
+	
+	var local_y: float = local_player.global_position.y - 1.0
+	
 	input_seq = (input_seq + 1) % 65536
 	var buf := PackedByteArray()
 	buf.append(0x02)
@@ -163,6 +171,8 @@ func _send_player_input():
 	buf.append_array(_pack_f32_be(pitch))
 	buf.append(_i8_to_u8(move_x))
 	buf.append(_i8_to_u8(move_z))
+	buf.append_array(_pack_f32_be(local_y))
+	buf.append(flags)
 	udp.put_packet(buf)
 
 # udp in: route incoming packets by type
@@ -178,6 +188,18 @@ func _poll_udp():
 				_handle_world_state(packet)
 			0x12:
 				_handle_player_left(packet)
+
+# tcp out: send swing packet (0x03) with our player id
+
+func send_swing() -> void: 
+	if tcp == null or my_player_id < 0:
+		return
+	var buf := PackedByteArray()
+	buf.append(0x03)
+	buf.append((my_player_id >> 8) & 0xFF)
+	buf.append(my_player_id & 0xFF)
+	tcp.put_data(buf)
+	print("Sent Swing for player ", my_player_id)
 
 # udp in: parse world state and apply positions to remote players
 # layout: [type:u8, count:u8, then count x 22 bytes per player]
@@ -214,7 +236,6 @@ func _handle_player_left(packet: PackedByteArray):
 		remote_players.erase(pid)
 		print("[-] Player ", pid, " left, node despawned")
 
-# reconcile local player position against server, log drift
 # reconcile local player position against server, log drift
 func _reconcile_local(server_pos: Vector3):
 	if local_player == null:
