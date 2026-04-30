@@ -222,33 +222,20 @@ fn main() {
                         let mut players = players_clone.lock().unwrap();
 
                         // Find player using UDP address
-                        let player = players.values_mut().find(|p| p.udp_addr == Some(addr));
-                        if let Some(p) = player {
-
-                            // Don't process input from dead players
-                            if !p.alive {
-                                // skip
-                            } else {
-                                // Movement is based on client input, server computes real position
+                        if let Some(p) = players.get_mut(&input.player_id) {
+                            if p.udp_addr.is_none() {
+                                p.udp_addr = Some(addr);
+                                println!("[+] Bound UDP {} to Player {}", addr, p.id);
+                            }
+                            if p.alive {
                                 let speed = 0.1;
-
                                 let yaw = p.yaw;
                                 p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
                                 p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
                                 p.pos[1] = input.pos_y;
-
-                                // Update camera
                                 p.yaw = input.yaw;
                                 p.pitch = input.pitch;
-
                                 println!("[>] Player {} moved to {:?}", p.id, p.pos);
-                            }
-                        } else {
-                            // UDP address first time
-                            // Bind to player
-                            if let Some(p) = players.values_mut().find(|p| p.udp_addr.is_none()) {
-                                p.udp_addr = Some(addr);
-                                println!("[+] Bound UDP {} to Player {}", addr, p.id);
                             }
                         }
                     }

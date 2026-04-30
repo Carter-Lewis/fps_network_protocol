@@ -187,6 +187,7 @@ func _send_player_input():
 	input_seq = (input_seq + 1) % 65536
 	var buf := PackedByteArray()
 	buf.append(0x02)
+	buf.append_array(_pack_u16(my_player_id))
 	buf.append_array(_pack_u16(input_seq))
 	buf.append_array(_pack_f32_be(yaw))
 	buf.append_array(_pack_f32_be(pitch))

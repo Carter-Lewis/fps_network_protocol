@@ -96,6 +96,7 @@ pub struct PlayerInput {
     pub move_z: i8,
     pub pos_y: f32,
     pub jump: bool,
+    pub player_id: u16,
 }
 
 impl PlayerInput {
@@ -109,11 +110,11 @@ impl PlayerInput {
        [17] = flags (bit 0 = jump)
      */
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(18);
+        let mut buf = Vec::with_capacity(20);
         buf.push(MSG_PLAYER_INPUT);
 
+        buf.extend(&self.player_id.to_be_bytes());
         buf.extend(&self.seq_num.to_be_bytes());
-
         buf.extend(&self.yaw.to_be_bytes());
         buf.extend(&self.pitch.to_be_bytes());
 
@@ -128,23 +129,17 @@ impl PlayerInput {
     }
 
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
-        // Make sure packet is big enough
-        if buf.len() < 18 {
-            return None;
-        }
-        // Validate message type
-        if buf[0] != MSG_PLAYER_INPUT {
-            return None;
-        }
-        let seq_num = u16::from_be_bytes([buf[1], buf[2]]);
-        let yaw = f32::from_be_bytes(buf[3..7].try_into().ok()?);
-        let pitch = f32::from_be_bytes(buf[7..11].try_into().ok()?);
-        let move_x = buf[11] as i8;
-        let move_z = buf[12] as i8;
-        let pos_y   = f32::from_be_bytes(buf[13..17].try_into().ok()?);
-        let jump = buf[17] & 0x01 != 0;
-
-        Some(Self { seq_num, yaw, pitch, move_x, move_z, pos_y, jump })
+        if buf.len() < 20 { return None; }
+        if buf[0] != MSG_PLAYER_INPUT { return None; }
+        let player_id = u16::from_be_bytes([buf[1], buf[2]]);
+        let seq_num   = u16::from_be_bytes([buf[3], buf[4]]);
+        let yaw       = f32::from_be_bytes(buf[5..9].try_into().ok()?);
+        let pitch     = f32::from_be_bytes(buf[9..13].try_into().ok()?);
+        let move_x    = buf[13] as i8;
+        let move_z    = buf[14] as i8;
+        let pos_y     = f32::from_be_bytes(buf[15..19].try_into().ok()?);
+        let jump      = buf[19] & 0x01 != 0;
+        Some(Self { player_id, seq_num, yaw, pitch, move_x, move_z, pos_y, jump })
     }
 }
 
@@ -426,6 +421,7 @@ mod tests {
     #[test]
     fn player_input_roundtrip() {
         let msg = PlayerInput {
+            player_id: 1,
             seq_num: 42,
             yaw: 1.2,
             pitch: -0.7,
