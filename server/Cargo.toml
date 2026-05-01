@@ -9,3 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 protocol = { path = "../protocol" }
+
+tokio = {version = "1", features = ["full"]}
+quinn = "0.10"
+rcgen = "0.11"
+rustls = "0.21"
+bytes = "1"
