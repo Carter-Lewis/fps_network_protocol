@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use sha2::{Sha256, Digest};
+use wtransport::{Endpoint, Identity, ServerConfig, tls::Certificate, tls::PrivateKey};
 
 use bytes::Bytes;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
@@ -56,6 +57,22 @@ fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
     println!("[CERT] SHA-256 fingerprint (base64): {}", b64);
     println!("[CERT] Paste this into webtransport_bridge.js as the certificate hash");
     (cert_der, key_der, b64)
+}
+
+async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Server> {
+    let (cert_der, key_der, _hash_b64) = make_or_load_cert();
+    let identity = Identity::new(
+        wtranport::tls::CertificateChain::single(Certificate::from_der(cert_der).unwrap()),
+        PrivateKey::from_der_pkcs8(key_der),
+    );
+
+    let config = ServerConfig::builder()
+        .with_bind_default(7777)
+        .with_identity(identity)
+        .keep_alive_interval(Some(Duration::from_secs(3)))
+        .build();
+
+    Endpoint:: server(config).expect("endpoint")
 }
 
 fn make_server_config() -> ServerConfig {
