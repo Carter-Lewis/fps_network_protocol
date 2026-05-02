@@ -396,35 +396,25 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
 #[tokio::main]
 async fn main() {
     let players: Players = Arc::new(Mutex::new(HashMap::new()));
-    let udp_clients: UdpClients = Arc::new(Mutex::new(HashMap::new()));
 
-    let addr: SocketAddr = "0.0.0.0:7777"
-        .parse()
-        .expect("invalid server address");
+    tokio::spawn(run_legacy_tcp_udp(players.clone(), Default::default()));
 
-    let server_config = make_server_config();
+    let endpoint = build_endpoint().await;
+    println("[*] WebTransport server listening on UDP 7777");
 
-    let endpoint = Endpoint::server(server_config, addr)
-        .expect("failed to start QUIC server");
-
-    println!("[*] QUIC server listening on {}", addr);
-
-    tokio::spawn(run_legacy_tcp_udp(players.clone(), udp_clients.clone()));
-
-    while let Some(connecting) = endpoint.accept().await {
-        let players_clone = players.clone();
-
-        tokio::spawn(async move {
-            match connecting.await {
-                Ok(connection) => {
-                    handle_quic_client(connection, players_clone).await;
-
-                    // next step: handle this player's streams/datagrams here
-                }
-                Err(e) => {
-                    println!("[!] QUIC connection failed: {}", e);
-                }
-            }
-        });
+    loop {
+        let incoming = endpoint.accept().await;
+        let session_request = match incoming.await {
+            Ok(req) => req,
+            Err(e) => {println!("[!] handshake failed: {e}"); continue; }
+        };
+        println!("[+] WT request: path={} authority={}",
+            session_request.path(), session_request.authority());
+        let connection = match session_request.accept().await {
+            Ok(c) => c,
+            Err(e) => {println!("[!] WT accept failed: {e}"); continue; }
+        };
+        let players = players.clone();
+        tokio::spawn(handle_wt_client(connection, players));
     }
 }
