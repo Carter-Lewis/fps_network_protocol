@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
+use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
+use sha2::{Sha256, Digest};
 
 use bytes::Bytes;
 use quinn::{Endpoint, ServerConfig, TransportConfig};
@@ -30,6 +32,31 @@ type Players = Arc<Mutex<HashMap<u16, Player>>>;
 
 type UdpClients = Arc<Mutex<HashMap<SocketAddr, u16>>>;
 
+fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .expect("ECDSA keygen failed");
+
+    let mut params = CertificateParams::new(vec!["localhost".into()])
+        .expect("cert params");
+
+    // Chrome enforces <= 14 days for cert hash
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now;
+    params.not_after = now + time::Duration::days(13);
+
+    let cert = params.self_signed(&key_pair).expect("self-signed");
+    let cert_der = cert.der().to_vec();
+    let key_der = key_pair.serialize_der();
+
+    let mut hasher = Sha256::new();
+    hasher.update(&cert_der);
+    let hash = hasher.finalize();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(hash);
+
+    println!("[CERT] SHA-256 fingerprint (base64): {}", b64);
+    println!("[CERT] Paste this into webtransport_bridge.js as the certificate hash");
+    (cert_der, key_der, b64)
+}
 
 fn make_server_config() -> ServerConfig {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
