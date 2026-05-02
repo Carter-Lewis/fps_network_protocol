@@ -30,6 +30,10 @@ var simulate_local := false
 # transport state
 var use_webtransport: bool = OS.get_name() == "Web"
 
+# Variables for tracking if server stops communicating
+var _last_packet_time: float = 0.0
+const TIMEOUT_SECONDS := 5.0
+
 # sockets
 var tcp: StreamPeerTCP
 var udp: PacketPeerUDP
@@ -140,6 +144,29 @@ func _start_udp():
 	my_udp_port = udp.get_local_port()
 	udp.set_dest_address(server_ip, udp_port_server)
 	print("UDP bound on local port: ", my_udp_port)
+	
+func _connect_tcp_with_retry() -> void:
+	var attempts := 0
+	var max_attempts := 4
+	while attempts < max_attempts:
+		attempts += 1
+		print("Connection attempt %d of %d..." % [attempts, max_attempts])
+		_connect_tcp()
+		await _wait_tcp_connected()
+		if tcp != null and tcp.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+			_send_connect()
+			return
+		print("Connection failed, retrying in 2 seconds...")
+		tcp = null
+		await get_tree().create_timer(2.0).timeout
+
+	print("Could not connect after %d attempts, returning to menu" % max_attempts)
+	my_player_id = -1
+	_last_packet_time = 0.0
+	local_player = null
+	remote_players.clear()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 
 # tcp connect then send connect packet
 func _connect_tcp():
@@ -147,8 +174,6 @@ func _connect_tcp():
 	tcp = StreamPeerTCP.new()
 	tcp.set_no_delay(true)
 	tcp.connect_to_host(server_ip, tcp_port)
-	await _wait_tcp_connected()
-	_send_connect()
 
 # wait for tcp status to leave connecting, timeout after 1 second
 func _wait_tcp_connected():
@@ -179,9 +204,23 @@ func _process(_delta):
 	if my_player_id >= 0:
 		_send_player_input()
 		_poll_udp()
+		_check_timeout()
 	# update drift label if visible
 	if _show_drift_ui:
 		_update_drift_label()
+		
+func _check_timeout() -> void:
+	if _last_packet_time == 0.0:
+		return
+	var now = Time.get_ticks_msec() / 1000.0
+	if now - _last_packet_time > TIMEOUT_SECONDS:
+		print("Server timeout, returning to menu")
+		# reset state so we don't trigger again
+		my_player_id = -1
+		_last_packet_time = 0.0
+		local_player = null
+		remote_players.clear()
+		get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 
 # f2 = export csv, f3 = toggle drift ui
 func _input(event: InputEvent) -> void:
@@ -337,6 +376,7 @@ func _poll_udp():
 	if udp == null:
 		return
 	while udp.get_available_packet_count() > 0:
+		_last_packet_time = Time.get_ticks_msec() / 1000.0
 		var packet = udp.get_packet()
 		if packet.size() < 1:
 			continue

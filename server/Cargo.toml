@@ -16,3 +16,5 @@ rcgen = "0.11"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 bytes = "1"
 h3 = "0.0.3"
+
+rand = "0.10.1"

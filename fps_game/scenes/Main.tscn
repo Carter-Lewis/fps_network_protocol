@@ -1,11 +1,22 @@
 [gd_scene format=3 uid="uid://cveckji58x4bf"]
 
 [ext_resource type="Script" uid="uid://kvgby1sss5cg" path="res://scripts/Main.gd" id="1"]
+[ext_resource type="ArrayMesh" uid="uid://c7bf4gbcpqsgb" path="res://assets/tree.obj" id="2_0bbpv"]
+[ext_resource type="ArrayMesh" uid="uid://c61ut7n7b7hwc" path="res://assets/tree-tall.obj" id="2_c01mt"]
 [ext_resource type="Script" uid="uid://bsag8suw3iemc" path="res://scripts/LocalPlayer.gd" id="3"]
+[ext_resource type="ArrayMesh" uid="uid://dr8c4yhkcm1ib" path="res://assets/rock-a.obj" id="4_nxtc6"]
+[ext_resource type="ArrayMesh" uid="uid://x6qil5nb8c0e" path="res://assets/tree-log.obj" id="5_jlsqs"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_c01mt"]
+
+[sub_resource type="Sky" id="Sky_nxtc6"]
+sky_material = SubResource("ProceduralSkyMaterial_c01mt")
 
 [sub_resource type="Environment" id="Environment_rvslj"]
-ambient_light_color = Color(1, 1, 1, 1)
-ambient_light_energy = 1.8
+background_mode = 2
+sky = SubResource("Sky_nxtc6")
+ambient_light_color = Color(0.5686275, 1, 1, 1)
+ambient_light_energy = 9.3
 
 [sub_resource type="BoxMesh" id="floor_mesh"]
 size = Vector3(40, 0.5, 40)
@@ -50,7 +61,7 @@ shadow_opacity = 0.3
 [node name="Floor" type="StaticBody3D" parent="Arena" unique_id=2057527295]
 
 [node name="FloorMesh" type="MeshInstance3D" parent="Arena/Floor" unique_id=696159595]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.22293091, 0.9454169, -0.25170517)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.22446823, 0.91610193, -0.30413818)
 mesh = SubResource("floor_mesh")
 skin = SubResource("Skin_rvslj")
 surface_material_override/0 = SubResource("floor_mat")
@@ -102,6 +113,97 @@ surface_material_override/0 = SubResource("wall_mat")
 [node name="Col" type="CollisionShape3D" parent="Arena/WallWest" unique_id=1044708882]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.71484375)
 shape = SubResource("wall_shape")
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="Arena" unique_id=567735634]
+transform = Transform3D(10, 0, 0, 0, 10, 0, 0, 0, 10, 0.46836472, 1.205656, 3.3147473)
+mesh = ExtResource("2_c01mt")
+skeleton = NodePath("../..")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Arena" unique_id=1286874952]
+transform = Transform3D(5, 0, 0, 0, 5, 0, 0, 0, 5, -9, 1, -7.8276587)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D3" type="MeshInstance3D" parent="Arena" unique_id=975190222]
+transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 10.0032835, 1.0730448, 14.001497)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D4" type="MeshInstance3D" parent="Arena" unique_id=780325516]
+transform = Transform3D(7, 0, 0, 0, 7, 0, 0, 0, 7, 10.005456, 1.1628098, 1.7493582)
+mesh = ExtResource("4_nxtc6")
+
+[node name="MeshInstance3D5" type="MeshInstance3D" parent="Arena" unique_id=1976858890]
+
+[node name="MeshInstance3D6" type="MeshInstance3D" parent="Arena" unique_id=917419075]
+transform = Transform3D(-3.233949, -0.06655198, 3.8127608, 0, 4.9992385, 0.08726203, -3.8133416, 0.05644019, -3.2334564, 0, 1.5626783, -11.003704)
+mesh = ExtResource("5_jlsqs")
+
+[node name="MeshInstance3D7" type="MeshInstance3D" parent="Arena" unique_id=2136495211]
+transform = Transform3D(-1.135655, 0, -20.969269, 0, 21, 0, 20.969269, 0, -1.135655, 15.143587, 1.1166677, -13.326571)
+mesh = ExtResource("4_nxtc6")
+
+[node name="MeshInstance3D8" type="MeshInstance3D" parent="Arena" unique_id=2118712844]
+transform = Transform3D(10, 0, 0, 0, 10, 0, 0, 0, 10, -6.6950893, 0, 11.886587)
+mesh = ExtResource("2_c01mt")
+
+[node name="MeshInstance3D9" type="MeshInstance3D" parent="Arena" unique_id=1643379855]
+transform = Transform3D(172, 0, 0, 0, 172, 0, 0, 0, 172, -77.69813, -3.6792374, 76.14317)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D10" type="MeshInstance3D" parent="Arena" unique_id=1987567249]
+transform = Transform3D(-124.97084, 0, -118.179054, 0, 172, 0, 118.179054, 0, -124.97084, 67.15309, -2.3552856, 31.38794)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D11" type="MeshInstance3D" parent="Arena" unique_id=427046626]
+transform = Transform3D(172, 0, 0, 0, 172, 0, 0, 0, 172, -53.68512, -3.6792374, -49.988037)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D12" type="MeshInstance3D" parent="Arena" unique_id=1490529444]
+transform = Transform3D(119.479485, 0, -90.689865, 0, 150, 0, 90.689865, 0, 119.479485, -98.69711, -3.6792374, 6.6644363)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D13" type="MeshInstance3D" parent="Arena" unique_id=361205732]
+transform = Transform3D(172, 0, 0, 0, 172, 0, 0, 0, 172, -7.9682198, -3.6792374, -118.29712)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D14" type="MeshInstance3D" parent="Arena" unique_id=1337643512]
+transform = Transform3D(172, 0, 0, 0, 172, 0, 0, 0, 172, 97.31899, -3.6792374, -12.817406)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D15" type="MeshInstance3D" parent="Arena" unique_id=1996513256]
+transform = Transform3D(172, 0, 0, 0, 172, 0, 0, 0, 172, 117.59197, -3.6792374, 73.13147)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D16" type="MeshInstance3D" parent="Arena" unique_id=1987974083]
+transform = Transform3D(-111.230896, -1.9415705, -131.17896, -3.001857, 171.9738, 0, 131.15897, 2.2894213, -111.24784, 43.901558, -3.6792374, -79.8289)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D17" type="MeshInstance3D" parent="Arena" unique_id=1977080159]
+transform = Transform3D(5, 0, 0, 0, 5, 0, 0, 0, 5, -3.4964437, 1, -2.4722223)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D18" type="MeshInstance3D" parent="Arena" unique_id=1390084161]
+transform = Transform3D(5, 0, 0, 0, 5, 0, 0, 0, 5, -14.32304, 1, 4.7292185)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D19" type="MeshInstance3D" parent="Arena" unique_id=1450620296]
+transform = Transform3D(5, 0, 0, 0, 5, 0, 0, 0, 5, 15.533222, 1, 8.475356)
+mesh = ExtResource("2_0bbpv")
+
+[node name="MeshInstance3D20" type="MeshInstance3D" parent="Arena" unique_id=95196558]
+transform = Transform3D(-5.5904484, 0, -4.2127056, 0, 7, 0, 4.2127056, 0, -5.5904484, -15.045923, 1.1628098, -3.6145449)
+mesh = ExtResource("4_nxtc6")
+
+[node name="MeshInstance3D21" type="MeshInstance3D" parent="Arena" unique_id=958452290]
+transform = Transform3D(-1.3356632, 0, 6.8713903, 0, 7, 0, -6.8713903, 0, -1.3356632, -11.611477, 1.1628098, 12.948216)
+mesh = ExtResource("4_nxtc6")
+
+[node name="MeshInstance3D22" type="MeshInstance3D" parent="Arena" unique_id=1500391291]
+transform = Transform3D(3.7557728, -0.12327647, 7.062505, 0, 7.9987817, 0.13961925, -7.0635805, -0.06554727, 3.7552009, 1.7271538, 1.5626783, 11.372011)
+mesh = ExtResource("5_jlsqs")
+
+[node name="MeshInstance3D23" type="MeshInstance3D" parent="Arena" unique_id=2053479524]
+transform = Transform3D(1700.1748, 0, 1186.0583, 0, 2073, 0, -1186.0583, 0, 1700.1748, 167.0543, -18.051971, 1213.3485)
+mesh = ExtResource("4_nxtc6")
 
 [node name="RemotePlayers" type="Node3D" parent="." unique_id=523830323]
 
