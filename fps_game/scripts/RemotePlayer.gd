@@ -12,7 +12,7 @@ extends CharacterBody3D
 var player_id: int = -1
 var current_health: int = 100
 var _stick: MeshInstance3D = null
-var _stick_rest_rotation: Vector3 = Vector3(0.0, 0.0, 0.0)
+var _stick_rest_rotation: Vector3 = Vector3(deg_to_rad(-14.4), deg_to_rad(-73.4), deg_to_rad(-34.2))
 
 
 # Interpolation - smooth movement between received state updates
@@ -52,8 +52,8 @@ func _spawn_stick() -> void:
 	var stick_mesh = load("res://assets/resource-wood.obj")
 	_stick = MeshInstance3D.new()
 	_stick.mesh = stick_mesh
-	_stick.position = Vector3(1.0, 2.0, 0.0)
-	_stick.rotation = Vector3(0.0, PI, -PI / 2.0)
+	_stick.position = Vector3(0.485, 1.559, -0.76)
+	_stick.rotation = _stick_rest_rotation
 	_stick.scale = Vector3(5.0, 5.0, 5.0)
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = Color(0.55, 0.35, 0.15)
@@ -63,5 +63,5 @@ func _spawn_stick() -> void:
 	
 func play_swing() -> void:
 	var tween = create_tween()
-	tween.tween_property(_stick, "rotation", Vector3(0.0, 0.0, -1.0), 0.1)
-	tween.tween_property(_stick, "rotation", _stick_rest_rotation, 0.15)
+	tween.tween_property(_stick, "rotation", Vector3(deg_to_rad(-14.4), deg_to_rad(-73.4), 1.2), 0.15)
+	tween.tween_property(_stick, "rotation", _stick_rest_rotation, 0.2)

@@ -78,23 +78,33 @@ fn handle_client(mut stream: TcpStream, players: Players, udp: Arc<UdpSocket>) {
                     if let Some(swing) = Swing::deserialize(&buf[..n]) {
                         let hits: Vec<u16> = {
                             let players_guard = players.lock().unwrap();
+
+                            // Clean up the hit logic a bit
                             if let Some(attacker) = players_guard.get(&swing.player_id) {
                                 let attacker_pos = attacker.pos;
+                                let attacker_yaw = attacker.yaw;
 
-                                // See if attack hits
+                                let fwd_x = attacker_yaw.sin();
+                                let fwd_z = -attacker_yaw.cos();
+
                                 let mut hits = Vec::new();
                                 for target in players_guard.values() {
-
-                                    // Don't let players hit themselves
                                     if target.id == swing.player_id { continue; }
+                                    if !target.alive { continue; }
 
-                                    let dx = attacker_pos[0] - target.pos[0];
-                                    let dy = attacker_pos[1] - target.pos[1];
-                                    let dz = attacker_pos[2] - target.pos[2];
+                                    let dx = target.pos[0] - attacker_pos[0];
+                                    let dy = target.pos[1] - attacker_pos[1];
+                                    let dz = target.pos[2] - attacker_pos[2];
                                     let dist = (dx*dx + dy*dy + dz*dz).sqrt();
-                                    if dist <= 2.5 {
-                                        hits.push(target.id);
-                                        println!("[!] Player {} hit player {} (dist {:.2})", swing.player_id, target.id, dist);
+
+                                    if dist <= 3.5 {
+                                        let horiz_dist = (dx*dx + dz*dz).sqrt();
+                                        if horiz_dist < 0.001 { continue; }
+                                        let dot = (dx / horiz_dist) * fwd_x + (dz / horiz_dist) * fwd_z;
+                                        if dot > 0.25 {
+                                            hits.push(target.id);
+                                            println!("[!] Player {} hit player {} (dist {:.2}, dot {:.2})", swing.player_id, target.id, dist, dot);
+                                        }
                                     }
                                 }
                                 hits
@@ -143,12 +153,16 @@ fn handle_client(mut stream: TcpStream, players: Players, udp: Arc<UdpSocket>) {
                     }
                 } else if msg_type == MSG_RESPAWN_REQUEST {
                     if let Some(req) = RespawnRequest::deserialize(&buf[..n]) {
+                        println!("[+] Respawn request received for player {}", req.player_id);
                         let mut players = players.lock().unwrap();
                         if let Some(p) = players.get_mut(&req.player_id) {
                             p.health = 100;
                             p.alive = true;
-                            p.pos = [0.0, 0.0, 0.0];
-                            println!("[+] Player {} has respawned", req.player_id);
+                            // Make people respawn randomly within the bounds
+                            let angle = rand::random::<f32>() * std::f32::consts::TAU;
+                            let radius = rand::random::<f32>() * 8.0;
+                            p.pos = [angle.cos() * radius, 0.0, angle.sin() * radius];
+                            println!("[+] Player {} respawned at {:?}", req.player_id, p.pos);
                         }
                     }
                 }
@@ -221,7 +235,7 @@ fn main() {
                     if let Some(input) = PlayerInput::deserialize(&buf[..len]) {
                         let mut players = players_clone.lock().unwrap();
 
-                        // Find player using UDP address
+                        // Find player using UDP addresssd
                         if let Some(p) = players.get_mut(&input.player_id) {
                             if p.udp_addr.is_none() {
                                 p.udp_addr = Some(addr);
@@ -235,7 +249,11 @@ fn main() {
                                 p.pos[1] = input.pos_y;
                                 p.yaw = input.yaw;
                                 p.pitch = input.pitch;
-                                println!("[>] Player {} moved to {:?}", p.id, p.pos);
+
+                                // Clamping will force the value to stay within this range to ensure
+                                // our server doesn't tell clients they can leave the wall bounds
+                                p.pos[0] = p.pos[0].clamp(-19.0, 19.0);
+                                p.pos[2] = p.pos[2].clamp(-19.0, 19.0);
                             }
                         }
                     }

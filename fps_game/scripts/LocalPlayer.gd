@@ -55,8 +55,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 func _physics_process(delta: float) -> void:
-	if _stick:
-		print("stick global: ", _stick.global_position, " | player global: ", global_position)
 	if _dead:
 		_respawn_timer -= delta
 		_respawn_label.text = "YOU DIED\nRespawning in %d..." % ceili(_respawn_timer)
