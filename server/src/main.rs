@@ -392,6 +392,22 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
     }
 }
 
+async fn handle_wt_client(conn: wtransport::Connection, _players: Players) {
+    println!("[+] WT client connected: {}", conn.remote_address());
+    loop {
+        tokio::select! {
+            dgram = conn.receive_datagram() => match dgram {
+                Ok(d) => println!("[>] datagram: {} bytes", d.payload().len()),
+                Err(e) => {println!("[-] dgram closed: {e}"); break; }
+            }, 
+            stream = conn.accept_uni() => match stream {
+                Ok(_s) => println!("[>] uni stream"),
+                Err(e) => { println!("[-] stream accept closed: {e}"); break; }
+            }
+        }
+    }
+}
+
 
 #[tokio::main]
 async fn main() {
