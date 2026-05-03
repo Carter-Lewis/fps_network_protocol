@@ -10,8 +10,9 @@ use sha2::{Sha256, Digest};
 use wtransport::{Endpoint, Identity, ServerConfig, tls::Certificate, tls::PrivateKey};
 
 use bytes::Bytes;
-use quinn::{Endpoint, ServerConfig, TransportConfig};
 use protocol::*;
+use base64::Engine;
+use time::{OffsetDateTime, Duration as TimeDuration};
 
 // Global PlayerID counter
 static NEXT_PLAYER_ID: AtomicU16 = AtomicU16::new(1);
@@ -41,11 +42,12 @@ fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
         .expect("cert params");
 
     // Chrome enforces <= 14 days for cert hash
-    let now = time::OffsetDateTime::now_utc();
+    let now = OffsetDateTime::now_utc();
     params.not_before = now;
-    params.not_after = now + time::Duration::days(13);
+    params.not_after = now + TimeDuration::days(13);
 
-    let cert = params.self_signed(&key_pair).expect("self-signed");
+
+    let cert = params.self_signed(&key_pair).unwrap();
     let cert_der = cert.der().to_vec();
     let key_der = key_pair.serialize_der();
 
@@ -62,7 +64,7 @@ fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
 async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Server> {
     let (cert_der, key_der, _hash_b64) = make_or_load_cert();
     let identity = Identity::new(
-        wtranport::tls::CertificateChain::single(Certificate::from_der(cert_der).unwrap()),
+        wtransport::tls::CertificateChain::single(Certificate::from_der(cert_der).unwrap()),
         PrivateKey::from_der_pkcs8(key_der),
     );
 
@@ -73,33 +75,6 @@ async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Serve
         .build();
 
     Endpoint:: server(config).expect("endpoint")
-}
-
-fn make_server_config() -> ServerConfig {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-        .expect("failed to generate self signed cert");
-
-    let cert_der = cert.serialize_der().expect("failed to serialize der");
-
-    let key_der = cert.serialize_private_key_der();
-
-    let cert_chain = vec![rustls::Certificate(cert_der)];
-    let key = rustls::PrivateKey(key_der);
-
-    let mut server_crypto = rustls::ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key)
-        .expect("failed to build rustls server config");
-    server_crypto.alpn_protocols = vec![b"hq-29".to_vec()];
-
-    let mut server_config = ServerConfig::with_crypto(Arc::new(server_crypto));
-
-    let mut transport_config = TransportConfig::default();
-    transport_config.datagram_receive_buffer_size(Some(64 * 1024));
-    *Arc::get_mut(&mut server_config.transport).expect("transport config still shared") = transport_config;
-
-    server_config
 }
 
 fn snapshot_world(players: &Players) -> Vec<u8> {
@@ -392,7 +367,7 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
     }
 }
 
-async fn handle_wt_client(conn: wtransport::Connection, _players: Players) {
+async fn _client(conn: wtransport::Connection, _players: Players) {
     println!("[+] WT client connected: {}", conn.remote_address());
     loop {
         tokio::select! {
@@ -416,7 +391,7 @@ async fn main() {
     tokio::spawn(run_legacy_tcp_udp(players.clone(), Default::default()));
 
     let endpoint = build_endpoint().await;
-    println("[*] WebTransport server listening on UDP 7777");
+    println!("[*] WebTransport server listening on UDP 7777");
 
     loop {
         let incoming = endpoint.accept().await;
@@ -431,6 +406,6 @@ async fn main() {
             Err(e) => {println!("[!] WT accept failed: {e}"); continue; }
         };
         let players = players.clone();
-        tokio::spawn(handle_wt_client(connection, players));
+        tokio::spawn(_client(connection, players));
     }
 }
