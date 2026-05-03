@@ -25,8 +25,36 @@ struct Player {
     pitch: f32,
     health: i32,
     alive: bool,
-    //udp_addr: Option<SocketAddr>,
-    //tcp_stream: Option<Arc<Mutex<TcpStream>>>,
+    udp_addr: Option<SocketAddr>,
+    tcp_stream: Option<Arc<Mutex<TcpStream>>>,
+
+    // wtransport path
+    wt_conn: Option<wtransport::Connection>,
+}
+
+impl Player {
+    async fn send_reliable(&self, data: Vec<u8>) {
+        if let Some(c) = &self.wt_conn {
+            // open a uni stream for reliable delivery
+            if let Od(mut s) = c.open_uni().await.unwrap_or_else(|e| {
+                println!("[!] open_uni failed: {e}"); panic!()
+            }).await {
+                let _ = s.write_all(&data).await;
+                let _ = s.finish().await;
+            }
+        } else if let Some(tcp) = &self.tcp_stream {
+            use std::io::Write;
+            let _ = tcp_lock().unwrap().write_all(&data);
+        }
+    }
+
+    fn send_unreliable(&self, data: Vec<u8>, udp: &Arc<UdpSocket>) {
+        if let Some(c) = &self.wt_conn {
+            let _ = c.send_datagram(data);
+        } else if let Some(addr) = self.udp_addr {
+            let _ = udp.try_send_to(&data, addr);
+        }
+    }
 }
 
 // Shared game state
