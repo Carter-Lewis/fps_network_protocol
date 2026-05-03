@@ -36,7 +36,7 @@ impl Player {
     async fn send_reliable(&self, data: Vec<u8>) {
         if let Some(c) = &self.wt_conn {
             // open a uni stream for reliable delivery
-            if let Od(mut s) = c.open_uni().await.unwrap_or_else(|e| {
+            if let Ok(mut s) = c.open_uni().await.unwrap_or_else(|e| {
                 println!("[!] open_uni failed: {e}"); panic!()
             }).await {
                 let _ = s.write_all(&data).await;
@@ -44,7 +44,8 @@ impl Player {
             }
         } else if let Some(tcp) = &self.tcp_stream {
             use std::io::Write;
-            let _ = tcp_lock().unwrap().write_all(&data);
+            let mut stream = tcp.lock().unwrap();
+            let _ = stream.write_all(&data);
         }
     }
 
@@ -103,6 +104,22 @@ async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Serve
         .build();
 
     Endpoint:: server(config).expect("endpoint")
+}
+
+async fn broadcast_loop(players: Players, udp: Arc<UdpSocket>) {
+    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    loop {
+        tick.tick().await;
+        let snapshot = snapshot_world(&players);
+        let players_g = players.lock().unwrap();
+        for p in players_g.values() {
+            if let Some(c) = &p.wt_conn {
+                let _ = c.send_datagram(snapshot.clone());
+            } else if let Some(addr) = p.udp_addr {
+                let _ = udp.try_send_to(&snapshot, addr);
+            }
+        }
+    }
 }
 
 fn snapshot_world(players: &Players) -> Vec<u8> {
@@ -230,6 +247,9 @@ async fn run_legacy_tcp_udp(players: Players, udp_clients: UdpClients) {
                                 pitch: 0.0,
                                 health: 100,
                                 alive: true,
+                                tcp_stream: None,
+                                udp_addr: None,
+                                wt_conn: None,
                             });
                         }
 
@@ -289,6 +309,9 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
                                                 pitch: 0.0,
                                                 health: 100,
                                                 alive: true,
+                                                tcp_stream: None,
+                                                udp_addr: None,
+                                                wt_conn: None,
                                             });
                                         }
 
@@ -351,6 +374,9 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
                                             pitch: 0.0,
                                             health: 100,
                                             alive: true,
+                                            tcp_stream: None,
+                                            udp_addr: None,
+                                            wt_conn: None,
                                         });
                                     }
 
@@ -394,6 +420,61 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
         }
     }
 }
+
+async fn handle_wt_client(conn: wtransport::Connection, players: Players, udp: Arc<UdpSocket>) {
+    let mut my_id: Option<u16> = None;
+
+    loop {
+        tokio::select! {
+            // Datagrams: playerinput
+            dgram = conn.receive_datagram() => {
+                let Ok(d) = dgram else { break; };
+                let bytes = d.payload();
+                if(bytes.is_empty()) {continue; }
+                match bytes[0] {
+                    MSG_PLAYER_INPUT => apply_player_input(&players, bytes),
+                    _ => {} // Ignore case
+                }
+            }
+
+            stream = conn.accept_uni() => {
+                let Ok(mut s) = stream else {break; };
+                let buf = s.read_to_end(&mut buf, 1024).await.unwrap_or_default();
+                if(buf.is_empty()) { continue; }
+                match buf[0] {
+                    MSG_CONNECT => {
+                        let pid = NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed);
+                        my_id = Some(pid);
+                        players.lock().unwrap().insert(pid, Player {
+                            id: pid, pos: [0.0;3], yaw: 0.0, pitch:0.0,
+                            health: 100, alive: true,
+                            udp_addr: None, tcp_stream: None,
+                            wt_con: Some(conn.clone()),
+                        });
+                        let resp = Connected {player_id: pid}.serialize();
+                        if let Ok(mut out) = conn.open_uni().await {
+                            let _ = out.write_all(&resp).await;
+                            let _ = out.finish().await;
+                        }
+                        println!("[+] WT player {pid} connected");
+                    }
+                    MSG_SWING => handle_swing(&players, &conn, &udp, &buf).await,
+                    MSG_RESPAWN_REQUEST => handle_respawn(&players, &buf),
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(pid) = my_id {
+            players.lock().unwrap().remove(&pid);
+            broadcast_player_left(&players, &udp, pid).await;
+            println!("[-] WT player {pid} disconnected");
+        }
+    }
+}
+
+
+
 
 async fn _client(conn: wtransport::Connection, _players: Players) {
     println!("[+] WT client connected: {}", conn.remote_address());
