@@ -60,29 +60,53 @@ type Players = Arc<Mutex<HashMap<u16, Player>>>;
 type UdpClients = Arc<Mutex<HashMap<SocketAddr, u16>>>;
 
 fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
-    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
-        .expect("ECDSA keygen failed");
+    const CERT_FILE: &str = "cert.der";
+    const KEY_FILE: &str = "key.der";
+    const EXPIRY_FILE: &str = "cert_expiry.txt";
 
-    let mut params = CertificateParams::new(vec!["localhost".into()])
-        .expect("cert params");
+    // Reuse saved cert if it has more than 1 day remaining
+    if let (Ok(cert_der), Ok(key_der), Ok(expiry_str)) = (
+        std::fs::read(CERT_FILE),
+        std::fs::read(KEY_FILE),
+        std::fs::read_to_string(EXPIRY_FILE),
+    ) {
+        if let Ok(expiry_unix) = expiry_str.trim().parse::<i64>() {
+            let now_unix = OffsetDateTime::now_utc().unix_timestamp();
+            let days_left = (expiry_unix - now_unix) / 86400;
+            if days_left > 1 {
+                let mut hasher = Sha256::new();
+                hasher.update(&cert_der);
+                let b64 = base64::engine::general_purpose::STANDARD.encode(hasher.finalize());
+                println!("[CERT] Reusing saved cert ({} days remaining)", days_left);
+                println!("[CERT] SHA-256 fingerprint (base64): {}", b64);
+                return (cert_der, key_der, b64);
+            }
+            println!("[CERT] Saved cert expires too soon, regenerating...");
+        }
+    }
 
-    // Chrome enforces <= 14 days for cert hash
+    // Generate new cert (Chrome enforces <= 14 days for hash-pinned certs)
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("ECDSA keygen failed");
     let now = OffsetDateTime::now_utc();
+    let mut params = CertificateParams::new(vec!["localhost".into()]).expect("cert params");
     params.not_before = now;
     params.not_after = now + TimeDuration::days(13);
-
 
     let cert = params.self_signed(&key_pair).unwrap();
     let cert_der = cert.der().to_vec();
     let key_der = key_pair.serialize_der();
 
+    let _ = std::fs::write(CERT_FILE, &cert_der);
+    let _ = std::fs::write(KEY_FILE, &key_der);
+    let _ = std::fs::write(EXPIRY_FILE, (now + TimeDuration::days(13)).unix_timestamp().to_string());
+
     let mut hasher = Sha256::new();
     hasher.update(&cert_der);
-    let hash = hasher.finalize();
-    let b64 = base64::engine::general_purpose::STANDARD.encode(hash);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(hasher.finalize());
 
+    println!("[CERT] Generated new cert (valid 13 days)");
     println!("[CERT] SHA-256 fingerprint (base64): {}", b64);
-    println!("[CERT] Paste this into webtransport_bridge.js as the certificate hash");
+    println!("[CERT] Paste this into NetworkManager.gd as CERT_HASH_B64");
     (cert_der, key_der, b64)
 }
 
@@ -102,7 +126,7 @@ async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Serve
     Endpoint:: server(config).expect("endpoint")
 }
 
-async fn broadcast_loop(players: Players, udp: Arc<UdpSocket>) {
+async fn broadcast_loop(players: Players) {
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     loop {
         tick.tick().await;
@@ -111,9 +135,8 @@ async fn broadcast_loop(players: Players, udp: Arc<UdpSocket>) {
         for p in players_g.values() {
             if let Some(c) = &p.wt_conn {
                 let _ = c.send_datagram(snapshot.clone());
-            } else if let Some(addr) = p.udp_addr {
-                let _ = udp.try_send_to(&snapshot, addr);
             }
+            // legacy UDP clients are handled by run_legacy_tcp_udp's own broadcast
         }
     }
 }
@@ -595,13 +618,22 @@ async fn handle_wt_client(conn: wtransport::Connection, players: Players, udp: A
                             wt_conn: Some(conn.clone()),
                         });
                         let resp = Connected {player_id: pid}.serialize();
-                        if let Ok(opening) = conn.open_uni().await {
-                            if let Ok(mut out) = opening.await {
-                                let _ = out.write_all(&resp).await;
-                                let _ = out.finish().await;
+                        println!("[+] WT player {pid} connected, sending Connected response...");
+                        match conn.open_uni().await {
+                            Err(e) => println!("[!] open_uni failed for player {pid}: {e}"),
+                            Ok(opening) => match opening.await {
+                                Err(e) => println!("[!] opening.await failed for player {pid}: {e}"),
+                                Ok(mut out) => {
+                                    if let Err(e) = out.write_all(&resp).await {
+                                        println!("[!] write_all failed for player {pid}: {e}");
+                                    } else if let Err(e) = out.finish().await {
+                                        println!("[!] finish failed for player {pid}: {e}");
+                                    } else {
+                                        println!("[+] Connected response sent to player {pid}: {:?}", resp);
+                                    }
+                                }
                             }
                         }
-                        println!("[+] WT player {pid} connected");
                     }
                     MSG_SWING => handle_swing(&players, &buf).await,
                     MSG_RESPAWN_REQUEST => handle_respawn(&players, &buf),
@@ -643,6 +675,9 @@ async fn main() {
     let players: Players = Arc::new(Mutex::new(HashMap::new()));
 
     tokio::spawn(run_legacy_tcp_udp(players.clone(), Default::default()));
+    tokio::spawn(broadcast_loop(players.clone()));
+
+    let udp_wt = Arc::new(UdpSocket::bind("0.0.0.0:0").await.expect("bind wt udp"));
 
     let endpoint = build_endpoint().await;
     println!("[*] WebTransport server listening on UDP 7777");
@@ -660,6 +695,7 @@ async fn main() {
             Err(e) => {println!("[!] WT accept failed: {e}"); continue; }
         };
         let players = players.clone();
-        tokio::spawn(_client(connection, players));
+        let udp = udp_wt.clone();
+        tokio::spawn(handle_wt_client(connection, players, udp));
     }
 }

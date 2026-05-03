@@ -5,6 +5,9 @@ extends Node
 const CLOUD_IP := "3.218.9.34"
 const LOCAL_IP := "127.0.0.1"
 const TOKYO_IP := "57.181.105.56"
+# Paste the SHA-256 base64 fingerprint printed by the server on startup.
+# Leave empty ("") when using a CA-signed cert (Let's Encrypt, etc.).
+const CERT_HASH_B64 := "gjyYgOUPVenxupNsn9dwnlVi3m+OcxSw8KihmJbo8do="
 
 enum Server { CLOUD, LOCAL, TOKYO }
 
@@ -70,6 +73,9 @@ func _ready():
 	label.visible = false
 	canvas.add_child(label)
 
+func _send_webtransport_stream(buf: PackedByteArray) -> void:
+	JavaScriptBridge.eval("webtransportBridge.sendStream(%s);" % _packed_byte_array_to_js_array(buf), true)
+	  
 func connect_to_server() -> void:
 	if use_webtransport:
 		await _connect_webtransport()
@@ -78,21 +84,54 @@ func connect_to_server() -> void:
 		await _connect_tcp_with_retry()
 
 func _webtransport_url() -> String:
-	return "https://%s:7777" % server_ip
+	match active_server:
+		Server.LOCAL: return "https://localhost:7777/wt"
+		Server.CLOUD: return "https://game-server-wt.duckdns.org:7777/wt"
+		Server.TOKYO: return "https://tokyo.notinuse.com/wt"
+		_: return "https://localhost:7777/wt"
 
 func _send_webtransport_packet(buf: PackedByteArray) -> void:
 	if not _webtransport_ready:
 		return
-	Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.sendDatagram(new Uint8Array(%s));" % _packed_byte_array_to_js_array(buf), true)
+	JavaScriptBridge.eval("webtransportBridge.sendDatagram(%s);" % _packed_byte_array_to_js_array(buf), true)
+
+func _csv_to_bytes(csv: String) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	for s in csv.split(","):
+		bytes.append(int(s))
+	return bytes
 
 func _read_webtransport_packet() -> PackedByteArray:
-	var packet = Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.receiveDatagram();", true)
-	if packet == null:
+	var csv = JavaScriptBridge.eval("webtransportBridge.receiveDatagram();", true)
+	if csv == null or typeof(csv) != TYPE_STRING or csv == "":
 		return PackedByteArray()
-	var bytes := PackedByteArray()
-	for value in packet:
-		bytes.append(int(value))
-	return bytes
+	return _csv_to_bytes(csv)
+
+func _poll_webtransport_streams() -> void:
+	while true:
+		var csv = JavaScriptBridge.eval("webtransportBridge.receiveStream();", true)
+		if csv == null or typeof(csv) != TYPE_STRING or csv == "":
+			break
+		var bytes := _csv_to_bytes(csv)
+		if bytes.is_empty():
+			break
+		match bytes[0]:
+			0x10:
+				if bytes.size() >= 3:
+					my_player_id = _unpack_u16(bytes, 1)
+					_last_packet_time = Time.get_ticks_msec() / 1000.0
+					print("Connected! player_id = ", my_player_id)
+			0x13:
+				if bytes.size() >= 7:
+					var _pid = _unpack_u16(bytes, 1)
+					var h = _unpack_i32_be(bytes, 3)
+					if local_player and local_player.has_method("update_health"):
+						local_player.update_health(h)
+			0x14:
+				if bytes.size() >= 3:
+					var _pid = _unpack_u16(bytes, 1)
+					if local_player and local_player.has_method("on_death"):
+						local_player.on_death()
 
 func _packed_byte_array_to_js_array(buf: PackedByteArray) -> String:
 	var parts: Array[String] = []
@@ -103,8 +142,7 @@ func _packed_byte_array_to_js_array(buf: PackedByteArray) -> String:
 func _connect_webtransport() -> void:
 	var url := _webtransport_url()
 	print("[WebTransport] Connecting to: ", url)
-	# Use connectAsync instead of connect to properly handle the async connection
-	Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.connectAsync('%s');" % url, true)
+	JavaScriptBridge.eval("webtransportBridge.connectAsync('%s', '%s');" % [url, CERT_HASH_B64], true)
 	await _wait_webtransport_connected()
 	_send_connect_webtransport()
 
@@ -112,8 +150,8 @@ func _wait_webtransport_connected() -> void:
 	var timeout := 10.0
 	var elapsed := 0.0
 	while elapsed < timeout:
-		var connected: Variant = Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.isConnectedStatus();", true)
-		var error: Variant = Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.getConnectionError();", true)
+		var connected: Variant = JavaScriptBridge.eval("webtransportBridge.isConnectedStatus();", true)
+		var error: Variant = JavaScriptBridge.eval("webtransportBridge.getConnectionError();", true)
 		
 		if error:
 			push_error("[WebTransport] Connection error: %s" % error)
@@ -134,7 +172,7 @@ func _send_connect_webtransport() -> void:
 	buf.append(0x01)
 	buf.append(0x00)
 	buf.append(0x00)
-	_send_webtransport_packet(buf)
+	_send_webtransport_stream(buf)
 	print("Sent WebTransport CONNECT")
 
 # bind udp first so we know our local port before tcp handshake
@@ -200,6 +238,8 @@ func _send_connect():
 
 # frame loop - poll tcp and udp every frame once connected
 func _process(_delta):
+	if use_webtransport:
+		_poll_webtransport_streams()
 	_poll_tcp()
 	if my_player_id >= 0:
 		_send_player_input()
@@ -349,7 +389,7 @@ func send_respawn_request() -> void:
 	buf.append((my_player_id >> 8) & 0xFF)
 	buf.append(my_player_id & 0xFF)
 	if use_webtransport:
-		_send_webtransport_packet(buf)
+		_send_webtransport_stream(buf)
 	else:
 		tcp.put_data(buf)
 	print("Sent RespawnRequest for player ", my_player_id)
@@ -361,11 +401,8 @@ func _poll_udp():
 			var packet := _read_webtransport_packet()
 			if packet.is_empty():
 				break
+			_last_packet_time = Time.get_ticks_msec() / 1000.0
 			match packet[0]:
-				0x10:
-					if packet.size() >= 3:
-						my_player_id = _unpack_u16(packet, 1)
-						print("Connected! player_id = ", my_player_id)
 				0x11:
 					_handle_world_state(packet)
 				0x12:
@@ -398,7 +435,7 @@ func send_swing() -> void:
 	buf.append((my_player_id >> 8) & 0xFF)
 	buf.append(my_player_id & 0xFF)
 	if use_webtransport:
-		_send_webtransport_packet(buf)
+		_send_webtransport_stream(buf)
 	else:
 		tcp.put_data(buf)
 	print("Sent Swing for player ", my_player_id)

@@ -1,205 +1,103 @@
-/**
- * WebTransport Bridge for Godot
- * 
- * This bridge provides WebTransport access to Godot's HTML5 export.
- * It handles the async nature of WebTransport and exposes synchronous-style
- * methods that Godot can call.
- */
-
 class WebTransportBridge {
-    constructor() {
-        this.transport = null;
-        this.reader = null;
-        this.writer = null;
-        this.isConnected = false;
-        this.incomingQueue = [];
-        this.onDataCallback = null;
-        this.onConnectCallback = null;
-        this.onDisconnectCallback = null;
-        this.onErrorCallback = null;
-        this.connectionPromise = null;
-        this.connectionError = null;
+  constructor() {
+    this.transport = null;
+    this.writer = null;
+    this.connected = false;
+    this.error = null;
+    this.queue = [];
+    this.streamQueue = [];
+  }
+
+  async connect(url, certHashB64) {
+    try {
+      const opts = {};
+      if (certHashB64) {
+        const raw = Uint8Array.from(atob(certHashB64), c => c.charCodeAt(0));
+        opts.serverCertificateHashes = [{ algorithm: "sha-256", value: raw }];
+      }
+      this.transport = new WebTransport(url, opts);
+      await this.transport.ready;
+      this.writer = this.transport.datagrams.writable.getWriter();
+      this.connected = true;
+      this._readLoop();
+      this._streamLoop();
+      console.log("[WT] Connected, loops started");
+    } catch (e) {
+      this.error = String(e);
+      this.connected = false;
+      console.error("[WT] connect error:", e);
     }
+  }
+  connectAsync(url, certHashB64) { this.connect(url, certHashB64); }
 
-    /**
-     * Connect to the WebTransport server
-     * @param {string} url - WebTransport server URL (e.g., "https://localhost:7777")
-     */
-    async connect(url) {
-        try {
-            console.log(`[WebTransport] Connecting to ${url}`);
-            this.transport = new WebTransport(url);
+  isConnectedStatus() { return this.connected; }
+  getConnectionError() { return this.error; }
 
-            // Wait for the session to be established
-            await this.transport.ready;
-            console.log("[WebTransport] Connected");
-            this.isConnected = true;
-            this.connectionError = null;
+  sendDatagram(arr) {
+    if (!this.writer) return false;
+    this.writer.write(new Uint8Array(arr)).catch(e => console.error("[WT] sendDatagram error:", e));
+    return true;
+  }
 
-            if (this.onConnectCallback) {
-                this.onConnectCallback();
-            }
+  // Returns a comma-separated string of byte values, or null if nothing queued.
+  // JavaScriptBridge.eval() in Godot 4 only supports primitive return types;
+  // returning an Array (object) would silently become null.
+  receiveDatagram() {
+    if (this.queue.length === 0) return null;
+    return Array.from(this.queue.shift()).join(',');
+  }
 
-            // Start reading datagrams in the background
-            this.startReading();
-        } catch (error) {
-            console.error(`[WebTransport] Connection failed: ${error}`);
-            this.isConnected = false;
-            this.connectionError = error.toString();
-            if (this.onErrorCallback) {
-                this.onErrorCallback(error.toString());
-            }
-            throw error;
+  receiveStream() {
+    if (this.streamQueue.length === 0) return null;
+    const csv = Array.from(this.streamQueue.shift()).join(',');
+    console.log("[WT] receiveStream:", csv);
+    return csv;
+  }
+
+  async _readLoop() {
+    const reader = this.transport.datagrams.readable.getReader();
+    while (this.connected) {
+      try {
+        const { value, done } = await reader.read();
+        if (done) break;
+        this.queue.push(value);
+      } catch (e) { console.error("[WT] _readLoop error:", e); break; }
+    }
+  }
+
+  async _streamLoop() {
+    console.log("[WT] _streamLoop started");
+    const reader = this.transport.incomingUnidirectionalStreams.getReader();
+    while (this.connected) {
+      try {
+        const { value: stream, done } = await reader.read();
+        if (done) break;
+        const r = stream.getReader();
+        const chunks = [];
+        while (true) {
+          const { value, done } = await r.read();
+          if (done) break;
+          chunks.push(value);
         }
+        const total = chunks.reduce((n, c) => n + c.length, 0);
+        const merged = new Uint8Array(total);
+        let o = 0; for (const c of chunks) { merged.set(c, o); o += c.length; }
+        console.log("[WT] incoming stream bytes:", Array.from(merged));
+        this.streamQueue.push(merged);
+      } catch (e) { console.error("[WT] _streamLoop error:", e); break; }
     }
+  }
 
-    /**
-     * Initiate connection (called from GDScript, doesn't await)
-     * Stores the promise internally for later checking
-     * @param {string} url - WebTransport server URL
-     */
-    connectAsync(url) {
-        console.log(`[WebTransport] connectAsync called with ${url}`);
-        this.connectionPromise = this.connect(url);
-        // Don't return the promise; GDScript can't handle it
-        // Instead, use isConnected polling from GDScript
-    }
-
-    /**
-     * Get connection error (if any)
-     * @returns {string|null} Error message or null if no error
-     */
-    getConnectionError() {
-        return this.connectionError;
-    }
-
-    /**
-     * Send a datagram to the server
-     * @param {Uint8Array} data - The data to send
-     */
-    async sendDatagram(data) {
-        if (!this.isConnected || !this.transport) {
-            console.error("[WebTransport] Not connected");
-            return false;
-        }
-
-        try {
-            const writer = this.transport.datagrams.writable.getWriter();
-            await writer.write(data);
-            writer.releaseLock();
-            return true;
-        } catch (error) {
-            console.error(`[WebTransport] Send failed: ${error}`);
-            if (this.onErrorCallback) {
-                this.onErrorCallback(error.toString());
-            }
-            return false;
-        }
-    }
-
-    /**
-     * Receive a datagram (non-blocking, returns from queue or null)
-     * @returns {Uint8Array|null} The next datagram, or null if queue is empty
-     */
-    receiveDatagram() {
-        if (this.incomingQueue.length > 0) {
-            return this.incomingQueue.shift();
-        }
-        return null;
-    }
-
-    /**
-     * Check if connected
-     * @returns {boolean} True if connected
-     */
-    isConnectedStatus() {
-        return this.isConnected;
-    }
-
-    /**
-     * Close the connection
-     */
-    async close() {
-        if (this.transport) {
-            try {
-                this.transport.close();
-            } catch (error) {
-                console.error(`[WebTransport] Close error: ${error}`);
-            }
-        }
-        this.isConnected = false;
-        if (this.onDisconnectCallback) {
-            this.onDisconnectCallback();
-        }
-    }
-
-    /**
-     * Start the background datagram reader
-     */
-    async startReading() {
-        if (!this.transport) return;
-
-        try {
-            const reader = this.transport.datagrams.readable.getReader();
-            while (this.isConnected) {
-                try {
-                    const { value, done } = await reader.read();
-                    if (done) {
-                        console.log("[WebTransport] Datagrams closed");
-                        break;
-                    }
-                    // Add to queue for Godot to read
-                    this.incomingQueue.push(value);
-                    if (this.onDataCallback) {
-                        this.onDataCallback(value);
-                    }
-                } catch (error) {
-                    console.error(`[WebTransport] Read error: ${error}`);
-                    break;
-                }
-            }
-        } catch (error) {
-            console.error(`[WebTransport] Reader setup failed: ${error}`);
-        } finally {
-            this.isConnected = false;
-            if (this.onDisconnectCallback) {
-                this.onDisconnectCallback();
-            }
-        }
-    }
-
-    /**
-     * Set callback for incoming data
-     * @param {Function} callback - Called when data arrives
-     */
-    setOnDataCallback(callback) {
-        this.onDataCallback = callback;
-    }
-
-    /**
-     * Set callback for connection established
-     * @param {Function} callback - Called on successful connection
-     */
-    setOnConnectCallback(callback) {
-        this.onConnectCallback = callback;
-    }
-
-    /**
-     * Set callback for disconnection
-     * @param {Function} callback - Called when disconnected
-     */
-    setOnDisconnectCallback(callback) {
-        this.onDisconnectCallback = callback;
-    }
-
-    /**
-     * Set callback for errors
-     * @param {Function} callback - Called on error
-     */
-    setOnErrorCallback(callback) {
-        this.onErrorCallback = callback;
-    }
+  async sendStream(arr) {
+    if (!this.transport) return false;
+    try {
+      const w = await this.transport.createUnidirectionalStream();
+      const writer = w.getWriter();
+      await writer.write(new Uint8Array(arr));
+      await writer.close();
+      return true;
+    } catch (e) { console.error("[WT] sendStream error:", e); return false; }
+  }
 }
 
-// Global instance for Godot to access
 window.webtransportBridge = new WebTransportBridge();

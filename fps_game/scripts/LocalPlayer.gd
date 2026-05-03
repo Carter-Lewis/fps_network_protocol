@@ -9,7 +9,6 @@ const GRAVITY = 9.8
 @onready var camera_mount: Node3D = $CameraMount
 @onready var hud: CanvasLayer = $HUD
 @onready var health_label: Label = $HUD/HealthLabel
-@onready var crosshair: TextureRect = $HUD/Crosshair
 @onready var hit_marker: TextureRect = $HUD/HitMarker
 
 var health: int = 100
