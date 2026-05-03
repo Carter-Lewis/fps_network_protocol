@@ -75,7 +75,7 @@ func connect_to_server() -> void:
 		await _connect_webtransport()
 	else:
 		_start_udp()
-		await _connect_tcp()
+		await _connect_tcp_with_retry()
 
 func _webtransport_url() -> String:
 	return "https://%s:7777" % server_ip
@@ -83,10 +83,10 @@ func _webtransport_url() -> String:
 func _send_webtransport_packet(buf: PackedByteArray) -> void:
 	if not _webtransport_ready:
 		return
-	JavaScriptBridge.eval("webtransportBridge.sendDatagram(new Uint8Array(%s));" % _packed_byte_array_to_js_array(buf), true)
+	Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.sendDatagram(new Uint8Array(%s));" % _packed_byte_array_to_js_array(buf), true)
 
 func _read_webtransport_packet() -> PackedByteArray:
-	var packet = JavaScriptBridge.eval("webtransportBridge.receiveDatagram();", true)
+	var packet = Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.receiveDatagram();", true)
 	if packet == null:
 		return PackedByteArray()
 	var bytes := PackedByteArray()
@@ -104,7 +104,7 @@ func _connect_webtransport() -> void:
 	var url := _webtransport_url()
 	print("[WebTransport] Connecting to: ", url)
 	# Use connectAsync instead of connect to properly handle the async connection
-	JavaScriptBridge.eval("webtransportBridge.connectAsync('%s');" % url, true)
+	Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.connectAsync('%s');" % url, true)
 	await _wait_webtransport_connected()
 	_send_connect_webtransport()
 
@@ -112,8 +112,8 @@ func _wait_webtransport_connected() -> void:
 	var timeout := 10.0
 	var elapsed := 0.0
 	while elapsed < timeout:
-		var connected := JavaScriptBridge.eval("webtransportBridge.isConnectedStatus();", true)
-		var error := JavaScriptBridge.eval("webtransportBridge.getConnectionError();", true)
+		var connected: Variant = Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.isConnectedStatus();", true)
+		var error: Variant = Engine.get_singleton("JavaScriptBridge").eval("webtransportBridge.getConnectionError();", true)
 		
 		if error:
 			push_error("[WebTransport] Connection error: %s" % error)

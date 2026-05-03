@@ -9,10 +9,10 @@ use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use sha2::{Sha256, Digest};
 use wtransport::{Endpoint, Identity, ServerConfig, tls::Certificate, tls::PrivateKey};
 
-use bytes::Bytes;
 use protocol::*;
 use base64::Engine;
 use time::{OffsetDateTime, Duration as TimeDuration};
+use tokio::net::TcpStream;
 
 // Global PlayerID counter
 static NEXT_PLAYER_ID: AtomicU16 = AtomicU16::new(1);
@@ -26,9 +26,7 @@ struct Player {
     health: i32,
     alive: bool,
     udp_addr: Option<SocketAddr>,
-    tcp_stream: Option<Arc<Mutex<TcpStream>>>,
-
-    // wtransport path
+    tcp_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     wt_conn: Option<wtransport::Connection>,
 }
 
@@ -42,10 +40,8 @@ impl Player {
                 let _ = s.write_all(&data).await;
                 let _ = s.finish().await;
             }
-        } else if let Some(tcp) = &self.tcp_stream {
-            use std::io::Write;
-            let mut stream = tcp.lock().unwrap();
-            let _ = stream.write_all(&data);
+        } else if let Some(tx) = &self.tcp_tx {
+            let _ = tx.send(data);
         }
     }
 
@@ -234,34 +230,77 @@ async fn run_legacy_tcp_udp(players: Players, udp_clients: UdpClients) {
                         return;
                     }
 
-                    if let Some(connect) = Connect::deserialize(&buf) {
-                        let player_id = NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed);
-                        let udp_addr = SocketAddr::new(peer.ip(), connect.udp_port);
+                    let Some(connect) = Connect::deserialize(&buf) else { return; };
 
-                        {
-                            let mut players = players.lock().unwrap();
-                            players.insert(player_id, Player {
-                                id: player_id,
-                                pos: [0.0, 0.0, 0.0],
-                                yaw: 0.0,
-                                pitch: 0.0,
-                                health: 100,
-                                alive: true,
-                                tcp_stream: None,
-                                udp_addr: None,
-                                wt_conn: None,
-                            });
+                    let player_id = NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed);
+                    let udp_addr = SocketAddr::new(peer.ip(), connect.udp_port);
+
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+                    {
+                        let mut players_g = players.lock().unwrap();
+                        players_g.insert(player_id, Player {
+                            id: player_id,
+                            pos: [0.0, 0.0, 0.0],
+                            yaw: 0.0,
+                            pitch: 0.0,
+                            health: 100,
+                            alive: true,
+                            tcp_tx: Some(tx),
+                            udp_addr: Some(udp_addr),
+                            wt_conn: None,
+                        });
+                    }
+                    udp_clients.lock().unwrap().insert(udp_addr, player_id);
+
+                    if let Err(e) = stream.write_all(&Connected { player_id }.serialize()).await {
+                        println!("[!] Failed to send legacy CONNECTED: {}", e);
+                        players.lock().unwrap().remove(&player_id);
+                        udp_clients.lock().unwrap().remove(&udp_addr);
+                        return;
+                    }
+                    println!("[+] Legacy client {} connected as player {}", peer, player_id);
+
+                    let (mut read_half, mut write_half) = stream.into_split();
+
+                    // Write task: drain the channel to the socket
+                    tokio::spawn(async move {
+                        while let Some(data) = rx.recv().await {
+                            if write_half.write_all(&data).await.is_err() {
+                                break;
+                            }
                         }
+                    });
 
-                        udp_clients.lock().unwrap().insert(udp_addr, player_id);
-
-                        let response = Connected { player_id };
-                        if let Err(e) = stream.write_all(&response.serialize()).await {
-                            println!("[!] Failed to send legacy CONNECTED: {}", e);
-                        } else {
-                            println!("[+] Legacy client {} connected as player {}", peer, player_id);
+                    // Read loop: handle reliable messages until disconnect
+                    let mut header = [0u8; 1];
+                    loop {
+                        if read_half.read_exact(&mut header).await.is_err() {
+                            break;
+                        }
+                        match header[0] {
+                            MSG_SWING => {
+                                let mut rest = [0u8; 2];
+                                if read_half.read_exact(&mut rest).await.is_err() { break; }
+                                let mut msg = vec![header[0]];
+                                msg.extend_from_slice(&rest);
+                                handle_swing(&players, &msg).await;
+                            }
+                            MSG_RESPAWN_REQUEST => {
+                                let mut rest = [0u8; 2];
+                                if read_half.read_exact(&mut rest).await.is_err() { break; }
+                                let mut msg = vec![header[0]];
+                                msg.extend_from_slice(&rest);
+                                handle_respawn(&players, &msg);
+                            }
+                            _ => break,
                         }
                     }
+
+                    // Disconnect: remove player so world state stops broadcasting them
+                    players.lock().unwrap().remove(&player_id);
+                    udp_clients.lock().unwrap().remove(&udp_addr);
+                    println!("[-] Legacy client {} (player {}) disconnected", peer, player_id);
                 });
             }
             Err(e) => {
@@ -309,7 +348,7 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
                                                 pitch: 0.0,
                                                 health: 100,
                                                 alive: true,
-                                                tcp_stream: None,
+                                                tcp_tx: None,
                                                 udp_addr: None,
                                                 wt_conn: None,
                                             });
@@ -374,7 +413,7 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
                                             pitch: 0.0,
                                             health: 100,
                                             alive: true,
-                                            tcp_stream: None,
+                                            tcp_tx: None,
                                             udp_addr: None,
                                             wt_conn: None,
                                         });
@@ -421,6 +460,109 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
     }
 }
 
+fn apply_player_input(players: &Players, bytes: &[u8]) {
+    if let Some(input) = PlayerInput::deserialize(bytes) {
+        let mut players = players.lock().unwrap();
+        if let Some(p) = players.get_mut(&input.player_id) {
+            let yaw = p.yaw;
+            p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * 0.1;
+            p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * 0.1;
+            p.pos[1] = input.pos_y;
+            p.yaw = input.yaw;
+            p.pitch = input.pitch;
+        }
+    }
+}
+
+async fn handle_swing(players: &Players, buf: &[u8]) {
+    let Some(swing) = Swing::deserialize(buf) else { return; };
+
+    let notify = SwingNotify { player_id: swing.player_id }.serialize();
+
+    let victims: Vec<u16> = {
+        let players_g = players.lock().unwrap();
+        let Some(sp) = players_g.get(&swing.player_id).map(|p| p.pos) else { return; };
+        players_g.values()
+            .filter(|p| p.id != swing.player_id && p.alive)
+            .filter(|p| {
+                let dx = p.pos[0] - sp[0];
+                let dy = p.pos[1] - sp[1];
+                let dz = p.pos[2] - sp[2];
+                (dx*dx + dy*dy + dz*dz).sqrt() < 2.0
+            })
+            .map(|p| p.id)
+            .collect()
+    };
+
+    for victim_id in victims {
+        let (new_health, died) = {
+            let mut players_g = players.lock().unwrap();
+            if let Some(p) = players_g.get_mut(&victim_id) {
+                p.health -= 25;
+                if p.health <= 0 { p.alive = false; }
+                (p.health, p.health <= 0)
+            } else {
+                continue;
+            }
+        };
+
+        let (victim_wt, victim_tcp) = {
+            let players_g = players.lock().unwrap();
+            players_g.get(&victim_id)
+                .map(|p| (p.wt_conn.clone(), p.tcp_tx.clone()))
+                .unwrap_or((None, None))
+        };
+
+        let health_msg = HealthUpdate { player_id: victim_id, health: new_health }.serialize();
+        if let Some(vc) = &victim_wt {
+            let _ = vc.send_datagram(health_msg.clone());
+        } else if let Some(tx) = &victim_tcp {
+            let _ = tx.send(health_msg);
+        }
+
+        if died {
+            let died_msg = YouDied { player_id: victim_id }.serialize();
+            if let Some(vc) = &victim_wt {
+                if let Ok(opening) = vc.open_uni().await {
+                    if let Ok(mut s) = opening.await {
+                        let _ = s.write_all(&died_msg).await;
+                        let _ = s.finish().await;
+                    }
+                }
+            } else if let Some(tx) = &victim_tcp {
+                let _ = tx.send(died_msg);
+            }
+        }
+    }
+
+    let players_g = players.lock().unwrap();
+    for p in players_g.values() {
+        if let Some(c) = &p.wt_conn {
+            let _ = c.send_datagram(notify.clone());
+        }
+    }
+}
+
+fn handle_respawn(players: &Players, buf: &[u8]) {
+    let Some(req) = RespawnRequest::deserialize(buf) else { return; };
+    let mut players_g = players.lock().unwrap();
+    if let Some(p) = players_g.get_mut(&req.player_id) {
+        p.health = 100;
+        p.alive = true;
+        p.pos = [0.0, 0.0, 0.0];
+    }
+}
+
+async fn broadcast_player_left(players: &Players, _udp: &Arc<UdpSocket>, _pid: u16) {
+    let snapshot = snapshot_world(players);
+    let players_g = players.lock().unwrap();
+    for p in players_g.values() {
+        if let Some(c) = &p.wt_conn {
+            let _ = c.send_datagram(snapshot.clone());
+        }
+    }
+}
+
 async fn handle_wt_client(conn: wtransport::Connection, players: Players, udp: Arc<UdpSocket>) {
     let mut my_id: Option<u16> = None;
 
@@ -430,17 +572,18 @@ async fn handle_wt_client(conn: wtransport::Connection, players: Players, udp: A
             dgram = conn.receive_datagram() => {
                 let Ok(d) = dgram else { break; };
                 let bytes = d.payload();
-                if(bytes.is_empty()) {continue; }
+                if bytes.is_empty() { continue; }
                 match bytes[0] {
-                    MSG_PLAYER_INPUT => apply_player_input(&players, bytes),
+                    MSG_PLAYER_INPUT => apply_player_input(&players, &bytes),
                     _ => {} // Ignore case
                 }
             }
 
             stream = conn.accept_uni() => {
                 let Ok(mut s) = stream else {break; };
-                let buf = s.read_to_end(&mut buf, 1024).await.unwrap_or_default();
-                if(buf.is_empty()) { continue; }
+                let mut buf = Vec::new();
+                s.read_to_end(&mut buf).await.unwrap_or_default();
+                if buf.is_empty() { continue; }
                 match buf[0] {
                     MSG_CONNECT => {
                         let pid = NEXT_PLAYER_ID.fetch_add(1, Ordering::Relaxed);
@@ -448,28 +591,30 @@ async fn handle_wt_client(conn: wtransport::Connection, players: Players, udp: A
                         players.lock().unwrap().insert(pid, Player {
                             id: pid, pos: [0.0;3], yaw: 0.0, pitch:0.0,
                             health: 100, alive: true,
-                            udp_addr: None, tcp_stream: None,
-                            wt_con: Some(conn.clone()),
+                            udp_addr: None, tcp_tx: None,
+                            wt_conn: Some(conn.clone()),
                         });
                         let resp = Connected {player_id: pid}.serialize();
-                        if let Ok(mut out) = conn.open_uni().await {
-                            let _ = out.write_all(&resp).await;
-                            let _ = out.finish().await;
+                        if let Ok(opening) = conn.open_uni().await {
+                            if let Ok(mut out) = opening.await {
+                                let _ = out.write_all(&resp).await;
+                                let _ = out.finish().await;
+                            }
                         }
                         println!("[+] WT player {pid} connected");
                     }
-                    MSG_SWING => handle_swing(&players, &conn, &udp, &buf).await,
+                    MSG_SWING => handle_swing(&players, &buf).await,
                     MSG_RESPAWN_REQUEST => handle_respawn(&players, &buf),
                     _ => {}
                 }
             }
         }
+    }
 
-        if let Some(pid) = my_id {
-            players.lock().unwrap().remove(&pid);
-            broadcast_player_left(&players, &udp, pid).await;
-            println!("[-] WT player {pid} disconnected");
-        }
+    if let Some(pid) = my_id {
+        players.lock().unwrap().remove(&pid);
+        broadcast_player_left(&players, &udp, pid).await;
+        println!("[-] WT player {pid} disconnected");
     }
 }
 
