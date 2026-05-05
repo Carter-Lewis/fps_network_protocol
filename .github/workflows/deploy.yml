@@ -64,9 +64,9 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
             "mkdir -p /home/ubuntu/game-server"
 
-          # Install/update systemd service file (inlined — no checkout needed)
-          ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST "
-            sudo tee /etc/systemd/system/game-server.service > /dev/null << 'EOF'
+          # Install/update systemd service file — heredoc piped as stdin to avoid quoting issues
+          ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
+            "sudo tee /etc/systemd/system/game-server.service > /dev/null" << 'EOF'
 [Unit]
 Description=FPS Game Server (WebTransport + TCP/UDP)
 After=network.target
@@ -82,8 +82,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-            sudo systemctl enable game-server
-          "
+          ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
+            "sudo systemctl enable game-server"
 
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
             "sudo systemctl stop game-server || true"
