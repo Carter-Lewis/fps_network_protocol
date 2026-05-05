@@ -46,9 +46,6 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
-      - name: Checkout (for service file)
-        uses: actions/checkout@v4
-
       - name: Download server binary
         uses: actions/download-artifact@v4
         with:
@@ -67,12 +64,24 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
             "mkdir -p /home/ubuntu/game-server"
 
-          # Install/update systemd service file
-          scp -o StrictHostKeyChecking=no -i key.pem \
-            infra/game-server.service \
-            ubuntu@$HOST:/tmp/game-server.service
+          # Install/update systemd service file (inlined — no checkout needed)
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST "
-            sudo mv /tmp/game-server.service /etc/systemd/system/game-server.service
+            sudo tee /etc/systemd/system/game-server.service > /dev/null << 'EOF'
+[Unit]
+Description=FPS Game Server (WebTransport + TCP/UDP)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/game-server
+ExecStart=/home/ubuntu/game-server/server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
             sudo systemctl enable game-server
           "
 
