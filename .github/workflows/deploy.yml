@@ -64,26 +64,23 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
             "mkdir -p /home/ubuntu/game-server"
 
-          # Install/update systemd service file — heredoc piped as stdin to avoid quoting issues
+          # Write service file locally then SCP — avoids heredoc-at-column-0 YAML issue
+          printf '[Unit]\n'                                              > /tmp/game-server.service
+          printf 'Description=FPS Game Server (WebTransport + TCP/UDP)\n' >> /tmp/game-server.service
+          printf 'After=network.target\n\n'                            >> /tmp/game-server.service
+          printf '[Service]\n'                                          >> /tmp/game-server.service
+          printf 'Type=simple\n'                                        >> /tmp/game-server.service
+          printf 'User=ubuntu\n'                                        >> /tmp/game-server.service
+          printf 'WorkingDirectory=/home/ubuntu/game-server\n'         >> /tmp/game-server.service
+          printf 'ExecStart=/home/ubuntu/game-server/server\n'         >> /tmp/game-server.service
+          printf 'Restart=on-failure\n'                                 >> /tmp/game-server.service
+          printf 'RestartSec=5\n\n'                                    >> /tmp/game-server.service
+          printf '[Install]\n'                                          >> /tmp/game-server.service
+          printf 'WantedBy=multi-user.target\n'                        >> /tmp/game-server.service
+          scp -o StrictHostKeyChecking=no -i key.pem \
+            /tmp/game-server.service ubuntu@$HOST:/tmp/game-server.service
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
-            "sudo tee /etc/systemd/system/game-server.service > /dev/null" << 'EOF'
-[Unit]
-Description=FPS Game Server (WebTransport + TCP/UDP)
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/game-server
-ExecStart=/home/ubuntu/game-server/server
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-          ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
-            "sudo systemctl enable game-server"
+            "sudo mv /tmp/game-server.service /etc/systemd/system/game-server.service && sudo systemctl enable game-server"
 
           ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@$HOST \
             "sudo systemctl stop game-server || true"
