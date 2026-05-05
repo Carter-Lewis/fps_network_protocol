@@ -2,9 +2,12 @@ extends Node
 
 @export var use_cloud := true
 
-const CLOUD_IP := "3.218.9.34"
+const CLOUD_IP := "server.bayloruif.com"
 const LOCAL_IP := "127.0.0.1"
 const TOKYO_IP := "57.181.105.56"
+# Paste the SHA-256 base64 fingerprint printed by the server on startup.
+# Leave empty ("") when using a CA-signed cert (Let's Encrypt, etc.).
+const CERT_HASH_B64 := ""  # empty = CA-signed cert (Let's Encrypt); set to fingerprint for self-signed
 
 enum Server { CLOUD, LOCAL, TOKYO }
 
@@ -27,6 +30,9 @@ var my_player_id: int = -1
 var input_seq: int = 0
 var simulate_local := false
 
+# transport state
+var use_webtransport: bool = OS.get_name() == "Web"
+
 # Variables for tracking if server stops communicating
 var _last_packet_time: float = 0.0
 const TIMEOUT_SECONDS := 5.0
@@ -35,6 +41,7 @@ const TIMEOUT_SECONDS := 5.0
 var tcp: StreamPeerTCP
 var udp: PacketPeerUDP
 var my_udp_port: int = 0
+var _webtransport_ready := false
 
 # scene refs
 var local_player: Node = null
@@ -43,11 +50,13 @@ var remote_players: Dictionary = {}  # player_id (int) -> RemotePlayer node
 var _drift_log: Array = []
 var _show_drift_ui := false
 var _start_time: float = 0.0
+var _last_world_state_seq: int = -1  # tracks monotonically increasing world state ticks
 
 signal player_joined(player_id: int)
 
 func _ready():
 	_start_time = Time.get_ticks_msec() / 1000.0
+	print("[NetworkManager] Platform: %s, Using WebTransport: %s" % [OS.get_name(), use_webtransport])
 	# wrap in CanvasLayer so it renders over the game
 	var canvas = CanvasLayer.new()
 	canvas.name = "DriftCanvas"
@@ -65,9 +74,107 @@ func _ready():
 	label.visible = false
 	canvas.add_child(label)
 
-func connect_to_server():
-	_start_udp()
-	await _connect_tcp_with_retry()
+func _send_webtransport_stream(buf: PackedByteArray) -> void:
+	JavaScriptBridge.eval("webtransportBridge.sendStream(%s);" % _packed_byte_array_to_js_array(buf), true)
+	  
+func connect_to_server() -> void:
+	if use_webtransport:
+		await _connect_webtransport()
+	else:
+		_start_udp()
+		await _connect_tcp_with_retry()
+
+func _webtransport_url() -> String:
+	match active_server:
+		Server.LOCAL: return "https://localhost:7777/wt"
+		Server.CLOUD: return "https://server.bayloruif.com:7777/wt"
+		Server.TOKYO: return "https://tokyo.notinuse.com/wt"
+		_: return "https://localhost:7777/wt"
+
+func _send_webtransport_packet(buf: PackedByteArray) -> void:
+	if not _webtransport_ready:
+		return
+	JavaScriptBridge.eval("webtransportBridge.sendDatagram(%s);" % _packed_byte_array_to_js_array(buf), true)
+
+func _csv_to_bytes(csv: String) -> PackedByteArray:
+	var bytes := PackedByteArray()
+	for s in csv.split(","):
+		bytes.append(int(s))
+	return bytes
+
+func _read_webtransport_packet() -> PackedByteArray:
+	var csv = JavaScriptBridge.eval("webtransportBridge.receiveDatagram();", true)
+	if csv == null or typeof(csv) != TYPE_STRING or csv == "":
+		return PackedByteArray()
+	return _csv_to_bytes(csv)
+
+func _poll_webtransport_streams() -> void:
+	while true:
+		var csv = JavaScriptBridge.eval("webtransportBridge.receiveStream();", true)
+		if csv == null or typeof(csv) != TYPE_STRING or csv == "":
+			break
+		var bytes := _csv_to_bytes(csv)
+		if bytes.is_empty():
+			break
+		match bytes[0]:
+			0x10:
+				if bytes.size() >= 3:
+					my_player_id = _unpack_u16(bytes, 1)
+					_last_packet_time = Time.get_ticks_msec() / 1000.0
+					print("Connected! player_id = ", my_player_id)
+			0x13:
+				if bytes.size() >= 7:
+					var _pid = _unpack_u16(bytes, 1)
+					var h = _unpack_i32_be(bytes, 3)
+					if local_player and local_player.has_method("update_health"):
+						local_player.update_health(h)
+			0x14:
+				if bytes.size() >= 3:
+					var _pid = _unpack_u16(bytes, 1)
+					if local_player and local_player.has_method("on_death"):
+						local_player.on_death()
+
+func _packed_byte_array_to_js_array(buf: PackedByteArray) -> String:
+	var parts: Array[String] = []
+	for byte in buf:
+		parts.append(str(byte))
+	return "[" + ",".join(parts) + "]"
+
+func _connect_webtransport() -> void:
+	var url := _webtransport_url()
+	print("[WebTransport] Connecting to: ", url)
+	JavaScriptBridge.eval("webtransportBridge.connectAsync('%s', '%s');" % [url, CERT_HASH_B64], true)
+	await _wait_webtransport_connected()
+	_send_connect_webtransport()
+
+func _wait_webtransport_connected() -> void:
+	var timeout := 10.0
+	var elapsed := 0.0
+	while elapsed < timeout:
+		var connected: Variant = JavaScriptBridge.eval("webtransportBridge.isConnectedStatus();", true)
+		var error: Variant = JavaScriptBridge.eval("webtransportBridge.getConnectionError();", true)
+		
+		if error:
+			push_error("[WebTransport] Connection error: %s" % error)
+			return
+		
+		if bool(connected):
+			_webtransport_ready = true
+			print("[WebTransport] Connected successfully")
+			return
+		
+		await get_tree().process_frame
+		elapsed += get_process_delta_time()
+	
+	push_error("[WebTransport] Connection timed out after %.1f seconds" % timeout)
+
+func _send_connect_webtransport() -> void:
+	var buf := PackedByteArray()
+	buf.append(0x01)
+	buf.append(0x00)
+	buf.append(0x00)
+	_send_webtransport_stream(buf)
+	print("Sent WebTransport CONNECT")
 
 # bind udp first so we know our local port before tcp handshake
 func _start_udp():
@@ -132,6 +239,8 @@ func _send_connect():
 
 # frame loop - poll tcp and udp every frame once connected
 func _process(_delta):
+	if use_webtransport:
+		_poll_webtransport_streams()
 	_poll_tcp()
 	if my_player_id >= 0:
 		_send_player_input()
@@ -203,6 +312,9 @@ func _poll_tcp():
 # udp out: send player input (0x02) every frame
 # layout: [type:u8, seq:u16be, yaw:f32be, pitch:f32be, move_x:i8, move_z:i8]
 func _send_player_input():
+	if use_webtransport:
+		_send_player_input_webtransport()
+		return
 	if udp == null or local_player == null:
 		return
 	var move_x: int = 0
@@ -236,18 +348,69 @@ func _send_player_input():
 	buf.append(flags)
 	udp.put_packet(buf)
 
+func _send_player_input_webtransport() -> void:
+	if local_player == null or not _webtransport_ready:
+		return
+	var move_x: int = 0
+	var move_z: int = 0
+	if Input.is_action_pressed("move_right"): move_x += 1
+	if Input.is_action_pressed("move_left"): move_x -= 1
+	if Input.is_action_pressed("move_backward"): move_z += 1
+	if Input.is_action_pressed("move_forward"): move_z -= 1
+
+	var flags: int = 0
+	if Input.is_action_just_pressed("jump"):
+		flags |= 0x01
+
+	var yaw: float = local_player.rotation.y
+	var pitch: float = 0.0
+	if local_player.has_node("CameraMount"):
+		pitch = local_player.get_node("CameraMount").rotation.x
+
+	var local_y: float = local_player.global_position.y - 1.0
+
+	input_seq = (input_seq + 1) % 65536
+	var buf := PackedByteArray()
+	buf.append(0x02)
+	buf.append_array(_pack_u16(my_player_id))
+	buf.append_array(_pack_u16(input_seq))
+	buf.append_array(_pack_f32_be(yaw))
+	buf.append_array(_pack_f32_be(pitch))
+	buf.append(_i8_to_u8(move_x))
+	buf.append(_i8_to_u8(move_z))
+	buf.append_array(_pack_f32_be(local_y))
+	buf.append(flags)
+	_send_webtransport_packet(buf)
+
 func send_respawn_request() -> void:
-	if tcp == null or my_player_id < 0:
+	if my_player_id < 0:
 		return
 	var buf := PackedByteArray()
 	buf.append(0x15)
 	buf.append((my_player_id >> 8) & 0xFF)
 	buf.append(my_player_id & 0xFF)
-	tcp.put_data(buf)
+	if use_webtransport:
+		_send_webtransport_stream(buf)
+	else:
+		tcp.put_data(buf)
 	print("Sent RespawnRequest for player ", my_player_id)
 
 # udp in: route incoming packets by type
 func _poll_udp():
+	if use_webtransport:
+		while true:
+			var packet := _read_webtransport_packet()
+			if packet.is_empty():
+				break
+			_last_packet_time = Time.get_ticks_msec() / 1000.0
+			match packet[0]:
+				0x11:
+					_handle_world_state(packet)
+				0x12:
+					_handle_player_left(packet)
+				0x04:
+					_handle_swing_notify(packet)
+		return
 	if udp == null:
 		return
 	while udp.get_available_packet_count() > 0:
@@ -266,13 +429,16 @@ func _poll_udp():
 # tcp out: send swing packet (0x03) with our player id
 
 func send_swing() -> void: 
-	if tcp == null or my_player_id < 0:
+	if my_player_id < 0:
 		return
 	var buf := PackedByteArray()
 	buf.append(0x03)
 	buf.append((my_player_id >> 8) & 0xFF)
 	buf.append(my_player_id & 0xFF)
-	tcp.put_data(buf)
+	if use_webtransport:
+		_send_webtransport_stream(buf)
+	else:
+		tcp.put_data(buf)
 	print("Sent Swing for player ", my_player_id)
 	
 # udp in: another player swung, play their animation
@@ -286,13 +452,19 @@ func _handle_swing_notify(packet: PackedByteArray):
 			rp.play_swing()
 
 # udp in: parse world state and apply positions to remote players
-# layout: [type:u8, count:u8, then count x 22 bytes per player]
+# layout: [type:u8, count:u8, then count x 26 bytes per player]
 func _handle_world_state(packet: PackedByteArray):
 	var player_count = packet[1]
 	var expected = 2 + player_count * 26
 	if packet.size() != expected:
 		push_warning("WorldState size mismatch: got %d, expected %d" % [packet.size(), expected])
 		return
+	# QUIC datagrams can arrive out of order; use a monotonic tick counter derived
+	# from the server's broadcast cadence to drop stale packets before cleanup.
+	var now_msec := Time.get_ticks_msec()
+	var is_latest := now_msec >= _last_world_state_seq
+	if is_latest:
+		_last_world_state_seq = now_msec
 	var offset = 2
 	var seen_pids: Array = []
 	for i in range(player_count):
@@ -308,7 +480,11 @@ func _handle_world_state(packet: PackedByteArray):
 			_reconcile_local(Vector3(px, py, pz))
 		else:
 			_apply_remote(pid, Vector3(px, py, pz), yaw, health)
-			
+
+	# Only run cleanup when this is the most-recent packet seen so far;
+	# skipping cleanup on out-of-order datagrams prevents spurious despawns.
+	if not is_latest:
+		return
 	for pid in remote_players.keys():
 		if pid not in seen_pids:
 			var node = remote_players[pid]
@@ -346,7 +522,9 @@ func _reconcile_local(server_pos: Vector3):
 func _apply_remote(pid: int, pos: Vector3, yaw: float, health: int):
 	if not remote_players.has(pid):
 		emit_signal("player_joined", pid)
-		return
+		# signal is synchronous: if spawning succeeded, remote_players[pid] is now set
+		if not remote_players.has(pid):
+			return  # our own player_id or spawn failed
 	var rp = remote_players[pid]
 	if is_instance_valid(rp):
 		var drift = pos.distance_to(rp.global_position)

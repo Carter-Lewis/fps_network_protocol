@@ -14,5 +14,5 @@ func _on_join_pressed() -> void:
 		0: NetworkManager.active_server = NetworkManager.Server.CLOUD
 		1: NetworkManager.active_server = NetworkManager.Server.TOKYO
 		2: NetworkManager.active_server = NetworkManager.Server.LOCAL
-	NetworkManager.connect_to_server()
+	await NetworkManager.connect_to_server()
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")

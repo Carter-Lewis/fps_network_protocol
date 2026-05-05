@@ -1,6 +1,162 @@
 [![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/mun0VlAh)
 Goal: Apply the knowledge you've learned in new ways.
 
+# FPS Networking Game - WebTransport Migration
+
+## Project Overview
+
+This project migrates a multiplayer FPS game from traditional TCP/UDP sockets to **QUIC with WebTransport**, enabling real-time networked gameplay in web browsers.
+
+### Key Achievements
+- ✅ **Server**: Rewrote networking stack in Rust using `quinn` QUIC library
+- ✅ **Protocol**: Maintained binary protocol for efficient message serialization
+- ✅ **Client Bridge**: Created JavaScript WebTransport wrapper for browser compatibility
+- ✅ **Deployment**: Architecture designed for AWS (Amplify + Cloudflare + EC2)
+
+### Technologies
+- **Server**: Rust (quinn 0.10, tokio, QUIC/UDP)
+- **Client**: GDScript (Godot 4.6) with JavaScript bridge
+- **Transport**: WebTransport (HTTP/3 + QUIC datagrams)
+- **Deployment**: AWS Amplify (static assets), Cloudflare (WebTransport tunnel), EC2 (game server)
+
+## Getting Started
+
+### Local Development
+```bash
+# Terminal 1: Start game server
+cd server
+cargo run --bin game-server
+
+# Terminal 2: Serve HTML5 export over HTTPS
+cd fps_game
+python3 serve_https.py
+
+# Terminal 3: Open browser
+# https://localhost:8000/FPS%20Networking%20Demo.html
+# Select "Local" server and click "Join"
+```
+
+### Production Deployment
+See [AWS_CLOUDFLARE_DEPLOYMENT.md](AWS_CLOUDFLARE_DEPLOYMENT.md) for:
+- EC2 instance setup (game server)
+- Cloudflare tunnel configuration (WebTransport proxy)
+- AWS Amplify deployment (static website)
+- Testing and troubleshooting
+
+Quick reference: [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+
+## Architecture
+
+### Network Stack
+- **Desktop**: Native TCP/UDP → Godot's `StreamPeerTCP` / `PacketPeerUDP`
+- **Web**: WebTransport (HTTP/3) → JavaScript bridge → Godot networking
+- **Server**: QUIC endpoint with datagram support
+
+### Message Flow
+```
+Browser Client
+    ↓ (WebTransport send_datagram)
+JavaScript Bridge (webtransport_bridge.js)
+    ↓ (JavaScriptBridge.eval)
+Godot NetworkManager (GDScript)
+    ↓ (packet serialization)
+Game Server (Rust, QUIC)
+    ↓ (world state broadcast)
+All Connected Players
+```
+
+## Repository Structure
+
+```
+├── server/
+│   ├── src/main.rs                    # QUIC server, player mgmt, world broadcast
+│   ├── src/bin/quic_smoke.rs          # QUIC smoke test client
+│   ├── src/bin/legacy_smoke.rs        # TCP/UDP smoke test client
+│   ├── src/bin/webtransport_gateway.rs # (Prototype) WebTransport proxy
+│   └── Cargo.toml                     # Dependencies: quinn, tokio, rustls, rcgen
+├── protocol/
+│   └── src/lib.rs                     # Message types & serialization
+├── fps_game/
+│   ├── scripts/NetworkManager.gd      # Transport abstraction (web/desktop)
+│   ├── webtransport_bridge.js         # JS WebTransport API wrapper
+│   ├── scenes/
+│   ├── assets/
+│   ├── project.godot
+│   ├── export_presets.cfg             # HTML5 export with bridge JS
+│   └── FPS Networking Demo.html       # Exported HTML5 build
+├── AWS_CLOUDFLARE_DEPLOYMENT.md       # Detailed production setup guide
+├── DEPLOYMENT_GUIDE.md                # Quick reference & architecture
+└── README.md                          # This file
+```
+
+## Configuration
+
+Edit `fps_game/scripts/NetworkManager.gd` to change server IPs:
+
+```gdscript
+const CLOUD_IP := "3.218.9.34"      # AWS: replace with your Cloudflare domain
+const LOCAL_IP := "127.0.0.1"
+const TOKYO_IP := "57.181.105.56"
+```
+
+For production, set `CLOUD_IP` to your Cloudflare domain (e.g., `game.example.com`).
+
+## Protocol Details
+
+Binary messages over QUIC datagrams or reliable streams:
+
+| Message | ID | Purpose |
+|---------|----|---------| 
+| MSG_CONNECT | 0x01 | Client requests join |
+| MSG_CONNECTED | 0x10 | Server assigns player_id |
+| MSG_PLAYER_INPUT | 0x02 | Client: pos, rotation, input state |
+| MSG_WORLD_STATE | 0x11 | Server: broadcast all players |
+
+See `protocol/src/lib.rs` for serialization format.
+
+## Testing
+
+### Unit Tests
+```bash
+cd server
+cargo test
+```
+
+### Smoke Tests
+```bash
+# QUIC datagram client
+cargo run --bin quic_smoke
+
+# Legacy TCP/UDP client
+cargo run --bin legacy_smoke
+```
+
+### Integration (Local)
+1. Start server: `cargo run --bin game-server`
+2. Start HTTPS server: `python3 fps_game/serve_https.py`
+3. Open: `https://localhost:8000/FPS%20Networking%20Demo.html`
+4. Select server and click "Join"
+5. Check browser console for WebTransport logs
+
+## Known Limitations & Future Work
+
+- **Local testing**: Cannot test full WebTransport flow locally (requires HTTP/3 upgrade). Use AWS deployment for end-to-end testing.
+- **Authentication**: Not implemented; add token-based auth for production.
+- **Persistent state**: Currently in-memory; add RDS/DynamoDB for multi-server deployments.
+- **Scalability**: Single EC2 instance; add auto-scaling groups and load balancing for high load.
+
+## Cloud Deployment Checklist
+
+- [ ] AWS account created
+- [ ] Cloudflare domain configured
+- [ ] EC2 instance launched with game server
+- [ ] Cloudflare tunnel established
+- [ ] Website deployed to Amplify
+- [ ] Client config updated with Cloudflare domain
+- [ ] HTML5 re-exported and deployed
+- [ ] Browser test successful
+- [ ] Production monitoring configured
+
 # Project description
 This is an open-ended project. Students can extend their BearTV project or do something new from the ground up. Project ideas must be approved by Dr. Freeman.
 
@@ -93,4 +249,5 @@ All other instructions for the project apply, including the above submission que
 - Machine learning for routing protocols
 
 --> These are just examples. I hope that you'll come up with a better idea to suit your own interests!
+Need to push to EC2
 Need to push to EC2

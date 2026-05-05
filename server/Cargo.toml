@@ -10,3 +10,14 @@ path = "src/main.rs"
 [dependencies]
 protocol = { path = "../protocol" }
 rand = "0.10.1"
+
+tokio = {version = "1", features = ["full"]}
+rcgen = "0.13"
+wtransport = "0.6"
+sha2 = "0.10"
+base64 = "0.22"
+bytes = "1"
+quinn = "0.10"
+time = "0.3"
+rustls = "0.21"
+
