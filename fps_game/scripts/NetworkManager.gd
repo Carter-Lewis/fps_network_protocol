@@ -2,12 +2,12 @@ extends Node
 
 @export var use_cloud := true
 
-const CLOUD_IP := "3.218.9.34"
+const CLOUD_IP := "server.bayloruif.com"
 const LOCAL_IP := "127.0.0.1"
 const TOKYO_IP := "57.181.105.56"
 # Paste the SHA-256 base64 fingerprint printed by the server on startup.
 # Leave empty ("") when using a CA-signed cert (Let's Encrypt, etc.).
-const CERT_HASH_B64 := "gjyYgOUPVenxupNsn9dwnlVi3m+OcxSw8KihmJbo8do="
+const CERT_HASH_B64 := ""  # empty = CA-signed cert (Let's Encrypt); set to fingerprint for self-signed
 
 enum Server { CLOUD, LOCAL, TOKYO }
 
@@ -50,6 +50,7 @@ var remote_players: Dictionary = {}  # player_id (int) -> RemotePlayer node
 var _drift_log: Array = []
 var _show_drift_ui := false
 var _start_time: float = 0.0
+var _last_world_state_seq: int = -1  # tracks monotonically increasing world state ticks
 
 signal player_joined(player_id: int)
 
@@ -86,7 +87,7 @@ func connect_to_server() -> void:
 func _webtransport_url() -> String:
 	match active_server:
 		Server.LOCAL: return "https://localhost:7777/wt"
-		Server.CLOUD: return "https://game-server-wt.duckdns.org:7777/wt"
+		Server.CLOUD: return "https://server.bayloruif.com:7777/wt"
 		Server.TOKYO: return "https://tokyo.notinuse.com/wt"
 		_: return "https://localhost:7777/wt"
 
@@ -451,13 +452,19 @@ func _handle_swing_notify(packet: PackedByteArray):
 			rp.play_swing()
 
 # udp in: parse world state and apply positions to remote players
-# layout: [type:u8, count:u8, then count x 22 bytes per player]
+# layout: [type:u8, count:u8, then count x 26 bytes per player]
 func _handle_world_state(packet: PackedByteArray):
 	var player_count = packet[1]
 	var expected = 2 + player_count * 26
 	if packet.size() != expected:
 		push_warning("WorldState size mismatch: got %d, expected %d" % [packet.size(), expected])
 		return
+	# QUIC datagrams can arrive out of order; use a monotonic tick counter derived
+	# from the server's broadcast cadence to drop stale packets before cleanup.
+	var now_msec := Time.get_ticks_msec()
+	var is_latest := now_msec >= _last_world_state_seq
+	if is_latest:
+		_last_world_state_seq = now_msec
 	var offset = 2
 	var seen_pids: Array = []
 	for i in range(player_count):
@@ -473,7 +480,11 @@ func _handle_world_state(packet: PackedByteArray):
 			_reconcile_local(Vector3(px, py, pz))
 		else:
 			_apply_remote(pid, Vector3(px, py, pz), yaw, health)
-			
+
+	# Only run cleanup when this is the most-recent packet seen so far;
+	# skipping cleanup on out-of-order datagrams prevents spurious despawns.
+	if not is_latest:
+		return
 	for pid in remote_players.keys():
 		if pid not in seen_pids:
 			var node = remote_players[pid]
@@ -511,7 +522,9 @@ func _reconcile_local(server_pos: Vector3):
 func _apply_remote(pid: int, pos: Vector3, yaw: float, health: int):
 	if not remote_players.has(pid):
 		emit_signal("player_joined", pid)
-		return
+		# signal is synchronous: if spawning succeeded, remote_players[pid] is now set
+		if not remote_players.has(pid):
+			return  # our own player_id or spawn failed
 	var rp = remote_players[pid]
 	if is_instance_valid(rp):
 		var drift = pos.distance_to(rp.global_position)

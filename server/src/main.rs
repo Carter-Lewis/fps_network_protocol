@@ -100,6 +100,20 @@ fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
     let _ = std::fs::write(KEY_FILE, &key_der);
     let _ = std::fs::write(EXPIRY_FILE, (now + TimeDuration::days(13)).unix_timestamp().to_string());
 
+    // Write PEM files so serve.py can use them for HTTPS static file serving
+    let cert_b64 = base64::engine::general_purpose::STANDARD.encode(&cert_der);
+    let cert_pem = format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        cert_b64.as_bytes().chunks(64)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>().join("\n"));
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(&key_der);
+    let key_pem = format!("-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        key_b64.as_bytes().chunks(64)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>().join("\n"));
+    let _ = std::fs::write("cert.pem", &cert_pem);
+    let _ = std::fs::write("key.pem", &key_pem);
+
     let mut hasher = Sha256::new();
     hasher.update(&cert_der);
     let b64 = base64::engine::general_purpose::STANDARD.encode(hasher.finalize());
@@ -111,11 +125,27 @@ fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
 }
 
 async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Server> {
-    let (cert_der, key_der, _hash_b64) = make_or_load_cert();
-    let identity = Identity::new(
-        wtransport::tls::CertificateChain::single(Certificate::from_der(cert_der).unwrap()),
-        PrivateKey::from_der_pkcs8(key_der),
-    );
+    // If DOMAIN is set, load the Let's Encrypt cert issued by certbot.
+    // Otherwise fall back to the self-signed cert (local dev / no domain).
+    let identity = match std::env::var("DOMAIN") {
+        Ok(domain) => {
+            let cert_path = format!("/etc/letsencrypt/live/{domain}/fullchain.pem");
+            let key_path  = format!("/etc/letsencrypt/live/{domain}/privkey.pem");
+            println!("[CERT] Loading Let's Encrypt cert for {domain}");
+            Identity::load_pemfiles(&cert_path, &key_path)
+                .await
+                .unwrap_or_else(|e| panic!("[CERT] Failed to load cert for {domain}: {e}"))
+        }
+        Err(_) => {
+            let (cert_der, key_der, _hash_b64) = make_or_load_cert();
+            Identity::new(
+                wtransport::tls::CertificateChain::single(
+                    Certificate::from_der(cert_der).unwrap(),
+                ),
+                PrivateKey::from_der_pkcs8(key_der),
+            )
+        }
+    };
 
     let config = ServerConfig::builder()
         .with_bind_default(7777)
@@ -123,7 +153,7 @@ async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Serve
         .keep_alive_interval(Some(Duration::from_secs(3)))
         .build();
 
-    Endpoint:: server(config).expect("endpoint")
+    Endpoint::server(config).expect("endpoint")
 }
 
 async fn broadcast_loop(players: Players) {
