@@ -83,10 +83,10 @@ fn apply_movement(p: &mut Player, input: &PlayerInput) {
         (0.0, 0.0)
     };
 
-    // rotate by yaw
+    // rotate by yaw — matches Godot's Y-rotation basis (transpose of standard 2D rotation)
     let yaw = input.yaw;
-    let world_x = dir_x * yaw.cos() - dir_z * yaw.sin();
-    let world_z = dir_x * yaw.sin() + dir_z * yaw.cos();
+    let world_x = dir_x * yaw.cos() + dir_z * yaw.sin();
+    let world_z = -dir_x * yaw.sin() + dir_z * yaw.cos();
 
     // apply movement
     p.pos[0] += world_x * speed * delta;
