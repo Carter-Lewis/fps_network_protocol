@@ -1,0 +1,15 @@
+[Unit]
+Description=FPS Game Server (WebTransport + TCP/UDP)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/game-server
+Environment=DOMAIN=server.bayloruif.com
+ExecStart=/home/ubuntu/game-server/server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

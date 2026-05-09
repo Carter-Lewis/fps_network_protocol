@@ -1,0 +1,11 @@
+version: 1
+frontend:
+  phases:
+    build:
+      commands: []  # web export is pre-compiled, nothing to build
+  artifacts:
+    baseDirectory: fps_game
+    files:
+      - '**/*'
+  cache:
+    paths: []
