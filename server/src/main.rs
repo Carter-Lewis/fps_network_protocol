@@ -1,7 +1,7 @@
 use std::net::{SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering, AtomicU32};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -16,6 +16,9 @@ use tokio::net::TcpStream;
 
 // Global PlayerID counter
 static NEXT_PLAYER_ID: AtomicU16 = AtomicU16::new(1);
+
+// Global tick counter
+static WORLD_TICK: AtomicU32 = AtomicU32::new(0);
 
 // Player struct
 struct Player {
@@ -34,11 +37,17 @@ impl Player {
     async fn send_reliable(&self, data: Vec<u8>) {
         if let Some(c) = &self.wt_conn {
             // open a uni stream for reliable delivery
-            if let Ok(mut s) = c.open_uni().await.unwrap_or_else(|e| {
-                println!("[!] open_uni failed: {e}"); panic!()
-            }).await {
-                let _ = s.write_all(&data).await;
-                let _ = s.finish().await;
+            // if let Ok(mut s) = c.open_uni().await.unwrap_or_else(|e| {
+                // println!("[!] open_uni failed: {e}"); panic!()
+            // }).await {
+                // let _ = s.write_all(&data).await;
+                // let _ = s.finish().await;
+            // }
+            if let Ok(opening) = c.open_uni().await {
+                if let Ok(mut s) = opening.await {
+                    let _ = s.write_all(&data).await;
+                    let _ = s.finish().await;
+                }
             }
         } else if let Some(tx) = &self.tcp_tx {
             let _ = tx.send(data);
@@ -58,6 +67,38 @@ impl Player {
 type Players = Arc<Mutex<HashMap<u16, Player>>>;
 
 type UdpClients = Arc<Mutex<HashMap<SocketAddr, u16>>>;
+
+// Function to help movement feel less laggy
+fn apply_movement(p: &mut Player, input: &PlayerInput) {
+    let speed = 6.0; // matches Godot speed
+    let delta = 1.0 / 60.0; // assumes ~60fps
+    let input_x = input.move_x as f32;
+    let input_z = input.move_z as f32;
+
+    // normalize input
+    let len = (input_x * input_x + input_z * input_z).sqrt();
+    let (dir_x, dir_z) = if len > 0.0 {
+        (input_x / len, input_z / len)
+    } else {
+        (0.0, 0.0)
+    };
+
+    // rotate by yaw
+    let yaw = input.yaw;
+    let world_x = dir_x * yaw.cos() - dir_z * yaw.sin();
+    let world_z = dir_x * yaw.sin() + dir_z * yaw.cos();
+
+    // apply movement
+    p.pos[0] += world_x * speed * delta;
+    p.pos[2] += world_z * speed * delta;
+
+    // sync rotation
+    p.yaw = input.yaw;
+    p.pitch = input.pitch;
+
+    // vertical position
+    p.pos[1] = input.pos_y;
+}
 
 fn make_or_load_cert() -> (Vec<u8>, Vec<u8>, String) {
     const CERT_FILE: &str = "cert.der";
@@ -157,7 +198,7 @@ async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::Serve
 }
 
 async fn broadcast_loop(players: Players) {
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut tick = tokio::time::interval(Duration::from_millis(16)); // changed from 50 to 16 to help with lag
     loop {
         tick.tick().await;
         let snapshot = snapshot_world(&players);
@@ -174,6 +215,7 @@ async fn broadcast_loop(players: Players) {
 fn snapshot_world(players: &Players) -> Vec<u8> {
     let players = players.lock().unwrap();
     WorldState {
+        tick: WORLD_TICK.fetch_add(1, Ordering::Relaxed),
         players: players.values().map(|p| PlayerState {
             player_id: p.id,
             pos_x: p.pos[0],
@@ -217,7 +259,7 @@ async fn run_legacy_tcp_udp(players: Players, udp_clients: UdpClients) {
     let players_for_broadcast = players.clone();
     let udp_clients_for_broadcast = udp_clients.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(50));
+        let mut interval = tokio::time::interval(Duration::from_millis(16)); // changed from 50 to 16 to help with lag
         loop {
             interval.tick().await;
             let bytes = snapshot_world(&players_for_broadcast);
@@ -253,12 +295,13 @@ async fn run_legacy_tcp_udp(players: Players, udp_clients: UdpClients) {
                             if let Some(pid) = pid {
                                 let mut players = players_for_udp.lock().unwrap();
                                 if let Some(player) = players.get_mut(&pid) {
-                                    let speed = 0.1;
-                                    let yaw = player.yaw;
-                                    player.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
-                                    player.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
-                                    player.yaw = input.yaw;
-                                    player.pitch = input.pitch;
+                                    // let speed = 0.1;
+                                    // let yaw = player.yaw;
+                                    // player.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
+                                    // player.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
+                                    // player.yaw = input.yaw;
+                                    // player.pitch = input.pitch;
+                                    apply_movement(player, &input);
                                 }
                             }
                         }
@@ -363,6 +406,7 @@ async fn run_legacy_tcp_udp(players: Players, udp_clients: UdpClients) {
     }
 }
 
+/* commented out because not being used
 async fn handle_quic_client(connection: quinn::Connection, players: Players) {
     println!("[+] Handling QUIC client: {}", connection.remote_address());
 
@@ -487,12 +531,13 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
                                     if let Some(pid) = player_id {
                                         let mut players = players.lock().unwrap();
                                         if let Some(p) = players.get_mut(&pid) {
-                                            let speed = 0.1;
-                                            let yaw = p.yaw;
-                                            p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
-                                            p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
-                                            p.yaw = input.yaw;
-                                            p.pitch = input.pitch;
+                                            // let speed = 0.1;
+                                            // let yaw = p.yaw;
+                                            // p.pos[0] += (input.move_x as f32 * yaw.cos() + input.move_z as f32 * yaw.sin()) * speed;
+                                            // p.pos[2] += (input.move_z as f32 * yaw.cos() - input.move_x as f32 * yaw.sin()) * speed;
+                                            // p.yaw = input.yaw;
+                                            // p.pitch = input.pitch;
+                                            apply_movement(p, &input);
                                             println!("[>] Player {} moved to {:?}", p.id, p.pos);
                                         }
                                     }
@@ -512,7 +557,10 @@ async fn handle_quic_client(connection: quinn::Connection, players: Players) {
         }
     }
 }
+ */
 
+// changed for lag helping
+/*
 fn apply_player_input(players: &Players, bytes: &[u8]) {
     if let Some(input) = PlayerInput::deserialize(bytes) {
         let mut players = players.lock().unwrap();
@@ -523,6 +571,15 @@ fn apply_player_input(players: &Players, bytes: &[u8]) {
             p.pos[1] = input.pos_y;
             p.yaw = input.yaw;
             p.pitch = input.pitch;
+        }
+    }
+}
+ */
+fn apply_player_input(players: &Players, bytes: &[u8]) {
+    if let Some(input) = PlayerInput::deserialize(bytes) {
+        let mut players = players.lock().unwrap();
+        if let Some(p) = players.get_mut(&input.player_id) {
+            apply_movement(p, &input);
         }
     }
 }

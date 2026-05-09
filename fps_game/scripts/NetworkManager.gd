@@ -461,10 +461,17 @@ func _handle_world_state(packet: PackedByteArray):
 		return
 	# QUIC datagrams can arrive out of order; use a monotonic tick counter derived
 	# from the server's broadcast cadence to drop stale packets before cleanup.
-	var now_msec := Time.get_ticks_msec()
-	var is_latest := now_msec >= _last_world_state_seq
-	if is_latest:
-		_last_world_state_seq = now_msec
+
+	# Changed to help lag
+	# var now_msec := Time.get_ticks_msec()
+	# var is_latest := now_msec >= _last_world_state_seq
+	# if is_latest:
+		# _last_world_state_seq = now_msec
+	var tick = _unpack_u32_be(packet, 1)
+	if tick <= _last_world_state_seq:
+	    return
+	_last_world_state_seq = tick
+
 	var offset = 2
 	var seen_pids: Array = []
 	for i in range(player_count):
@@ -514,9 +521,10 @@ func _reconcile_local(server_pos: Vector3):
 	var drift = server_pos.distance_to(local_player.global_position)
 	var elapsed = (Time.get_ticks_msec() / 1000.0) - _start_time
 	_drift_log.append({"time": elapsed, "player_id": my_player_id, "drift": drift})
-	if drift > 0.5:
+# changed to help with lag (changed from 0.5 to 2.0 and 0.3 to 0.1)
+	if drift > 2.0:
 		var corrected = Vector3(server_pos.x, local_player.global_position.y, server_pos.z)
-		local_player.global_position = local_player.global_position.lerp(corrected, 0.3)
+		local_player.global_position = local_player.global_position.lerp(corrected, 0.1)
 
 # apply server position and yaw to a remote player node, log drift
 func _apply_remote(pid: int, pos: Vector3, yaw: float, health: int):
@@ -549,6 +557,15 @@ func _pack_u16(val: int) -> PackedByteArray:
 
 func _unpack_u16(buf: PackedByteArray, offset: int) -> int:
 	return (buf[offset] << 8) | buf[offset + 1]
+
+# added to help with lag
+func _unpack_u32_be(buf: PackedByteArray, offset: int) -> int:
+    return (
+        (buf[offset] << 24) |
+        (buf[offset + 1] << 16) |
+        (buf[offset + 2] << 8) |
+        buf[offset + 3]
+    )
 
 func _pack_f32_be(val: float) -> PackedByteArray:
 	# encode as LE first then reverse to get BE

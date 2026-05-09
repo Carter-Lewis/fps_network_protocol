@@ -102,12 +102,13 @@ pub struct PlayerInput {
 impl PlayerInput {
     /* [0] = MsgType
        [1-2] = SeqNum
-       [3-6] = Yaw
-       [7-10] = Pitch
-       [11] = MoveX
-       [12] = MoveZ
-       [13-16] = PosY
-       [17] = flags (bit 0 = jump)
+       [3-4] = SeqNum
+       [5-8] = Yaw
+       [9-12] = Pitch
+       [13] = MoveX
+       [14] = MoveZ
+       [15-18] = PosY
+       [19] = flags (bit 0 = jump)
      */
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(20);
@@ -166,12 +167,15 @@ pub struct PlayerState{
 
 #[derive(Debug, PartialEq)]
 pub struct WorldState {
+    // update to help with lag
+    pub tick: u32,
     pub players: Vec<PlayerState>,
 }
 
 impl WorldState {
     // [0] = MsgType
-    // [1] = PlayerCount
+    // [1-4] = Tick (u32)
+    // [5] = PlayerCount
     // For each player:
     // [0-1] = PlayerID
     // [2-5] = PosX
@@ -184,6 +188,7 @@ impl WorldState {
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.push(MSG_WORLD_STATE);
+        buf.extend(&self.tick.to_be_bytes());
         buf.push(self.players.len() as u8);
 
         // Serialize each player in order
@@ -203,7 +208,7 @@ impl WorldState {
 
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
         // Has to have MsgType and PlayerCount
-        if buf.len() < 2 {
+        if buf.len() < 6 {
             return None;
         }
         // Validate message type
@@ -211,10 +216,12 @@ impl WorldState {
             return None;
         }
 
-        let player_count = buf[1] as usize;
+        let tick = u32::from_be_bytes(buf[1..5].try_into().ok()?);
+
+        let player_count = buf[5] as usize;
 
         // Each player takes 22 bytes
-        let expected_size = 2 + player_count * 26;
+        let expected_size = 6 + player_count * 26;
 
         // Make sure buffer is big enough
         if buf.len() != expected_size {
@@ -224,7 +231,7 @@ impl WorldState {
         let mut players = Vec::with_capacity(player_count);
 
         // Start read after header
-        let mut offset = 2;
+        let mut offset = 6;
 
         for _ in 0..player_count {
             let player_id = u16::from_be_bytes([buf[offset], buf[offset + 1]]);
@@ -257,7 +264,7 @@ impl WorldState {
                 health,
             });
         }
-        Some(Self { players })
+        Some(Self { tick, players })
     }
 }
 
@@ -447,6 +454,7 @@ mod tests {
     #[test]
     fn world_state_roundtrip() {
         let msg = WorldState {
+            tick: 123,
             players: vec![
                 PlayerState {
                     player_id: 1,

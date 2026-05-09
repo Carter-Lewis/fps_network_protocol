@@ -15,6 +15,8 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_drift_update_timer -= delta
+	# changed to help with lag
+	global_position = global_position.lerp(target_position, delta * 12.0)
 	if _drift_update_timer <= 0.0:
 		_drift_update_timer = 0.5
 		_update_drift_display()
