@@ -452,27 +452,24 @@ func _handle_swing_notify(packet: PackedByteArray):
 			rp.play_swing()
 
 # udp in: parse world state and apply positions to remote players
-# layout: [type:u8, count:u8, then count x 26 bytes per player]
+# layout: [type:u8, tick:u32be, count:u8, then count x 26 bytes per player]
 func _handle_world_state(packet: PackedByteArray):
-	var player_count = packet[1]
-	var expected = 2 + player_count * 26
+	# Header: type(1) + tick(4) + count(1) = 6 bytes
+	if packet.size() < 6:
+		push_warning("WorldState packet too short: %d bytes" % packet.size())
+		return
+	var tick = _unpack_u32_be(packet, 1)
+	if tick <= _last_world_state_seq:
+		return
+	_last_world_state_seq = tick
+
+	var player_count = packet[5]
+	var expected = 6 + player_count * 26
 	if packet.size() != expected:
 		push_warning("WorldState size mismatch: got %d, expected %d" % [packet.size(), expected])
 		return
-	# QUIC datagrams can arrive out of order; use a monotonic tick counter derived
-	# from the server's broadcast cadence to drop stale packets before cleanup.
 
-	# Changed to help lag
-	# var now_msec := Time.get_ticks_msec()
-	# var is_latest := now_msec >= _last_world_state_seq
-	# if is_latest:
-		# _last_world_state_seq = now_msec
-	var tick = _unpack_u32_be(packet, 1)
-	if tick <= _last_world_state_seq:
-	    return
-	_last_world_state_seq = tick
-
-	var offset = 2
+	var offset = 6
 	var seen_pids: Array = []
 	for i in range(player_count):
 		var pid    = _unpack_u16(packet, offset);    offset += 2
@@ -488,10 +485,6 @@ func _handle_world_state(packet: PackedByteArray):
 		else:
 			_apply_remote(pid, Vector3(px, py, pz), yaw, health)
 
-	# Only run cleanup when this is the most-recent packet seen so far;
-	# skipping cleanup on out-of-order datagrams prevents spurious despawns.
-	if not is_latest:
-		return
 	for pid in remote_players.keys():
 		if pid not in seen_pids:
 			var node = remote_players[pid]
@@ -560,12 +553,12 @@ func _unpack_u16(buf: PackedByteArray, offset: int) -> int:
 
 # added to help with lag
 func _unpack_u32_be(buf: PackedByteArray, offset: int) -> int:
-    return (
-        (buf[offset] << 24) |
-        (buf[offset + 1] << 16) |
-        (buf[offset + 2] << 8) |
-        buf[offset + 3]
-    )
+	return (
+		(buf[offset] << 24) |
+		(buf[offset + 1] << 16) |
+		(buf[offset + 2] << 8) |
+		buf[offset + 3]
+	)
 
 func _pack_f32_be(val: float) -> PackedByteArray:
 	# encode as LE first then reverse to get BE
