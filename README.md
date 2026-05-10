@@ -249,4 +249,3 @@ All other instructions for the project apply, including the above submission que
 - Machine learning for routing protocols
 
 --> These are just examples. I hope that you'll come up with a better idea to suit your own interests!
-push to ec2
