@@ -21,7 +21,13 @@ if not os.path.exists(cert_file):
     print(f"Certificate generated: {cert_file}")
 
 port = 8000
-handler = http.server.SimpleHTTPRequestHandler
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        super().end_headers()
+
+handler = Handler
 
 # Create SSL context with modern API
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

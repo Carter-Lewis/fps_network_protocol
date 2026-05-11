@@ -39,7 +39,7 @@ func apply_state(pos: Vector3, yaw: float, health: int) -> void:
 func _physics_process(delta: float) -> void:
 	# Interpolate toward target smoothly to hide packet jitter
 	# changed to help with lag (global to target)
-	target_position = global_position.lerp(_target_position, _interpolation_speed * delta)
+	global_position = global_position.lerp(_target_position, _interpolation_speed * delta)
 	rotation.y = lerp_angle(rotation.y, _target_yaw, _interpolation_speed * delta)
 
 func _update_health_bar() -> void:

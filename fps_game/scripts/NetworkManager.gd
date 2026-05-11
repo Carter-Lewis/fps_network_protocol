@@ -591,15 +591,34 @@ func _unpack_i32_be(buf: PackedByteArray, offset: int) -> int:
 
 # export drift log to csv, one row per player per sample
 func export_drift_csv() -> void:
-	var file = FileAccess.open("user://drift_log.csv", FileAccess.WRITE)
-	if file == null:
-		push_error("Failed to open drift log file")
-		return
-	file.store_line("time_seconds,player_id,drift_units")
+	var csv := "time_seconds,player_id,drift_units\n"
 	for entry in _drift_log:
-		file.store_line("%.3f,%d,%.4f" % [entry["time"], entry["player_id"], entry["drift"]])
-	file.close()
-	print("Drift log saved to: ", OS.get_user_data_dir(), "/drift_log.csv")
+		csv += "%.3f,%d,%.4f\n" % [entry["time"], entry["player_id"], entry["drift"]]
+	
+	if use_webtransport:
+		# Trigger browser download via JavaScript
+		JavaScriptBridge.eval("""
+			(function() {
+				var blob = new Blob([%s], {type: 'text/csv'});
+				var url = URL.createObjectURL(blob);
+				var a = document.createElement('a');
+				a.href = url;
+				a.download = 'drift_log.csv';
+				a.click();
+				URL.revokeObjectURL(url);
+			})();
+		""" % JSON.stringify(csv), true)
+		print("Drift log download triggered")
+	else:
+		var file = FileAccess.open("user://drift_log.csv", FileAccess.WRITE)
+		if file == null:
+			push_error("Failed to open drift log file")
+			return
+		file.store_line("time_seconds,player_id,drift_units")
+		for entry in _drift_log:
+			file.store_line("%.3f,%d,%.4f" % [entry["time"], entry["player_id"], entry["drift"]])
+		file.close()
+		print("Drift log saved to: ", OS.get_user_data_dir(), "/drift_log.csv")
 
 # build and update the on-screen drift label from recent log entries
 func _update_drift_label():
