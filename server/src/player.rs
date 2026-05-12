@@ -70,4 +70,6 @@ pub fn apply_movement(p: &mut Player, input: &PlayerInput) {
     p.yaw = input.yaw;
     p.pitch = input.pitch;
     p.pos[1] = input.pos_y;
+    p.pos[0] = p.pos[0].clamp(-19.0, 19.0);
+    p.pos[2] = p.pos[2].clamp(-19.0, 19.0);
 }

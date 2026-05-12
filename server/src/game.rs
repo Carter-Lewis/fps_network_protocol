@@ -10,7 +10,7 @@ pub fn snapshot_world(players: &Players) -> Vec<u8> {
     let players = players.lock().expect("players lock poisoned");
     WorldState {
         tick: WORLD_TICK.fetch_add(1, Ordering::Relaxed),
-        players: players.values().map(|p| PlayerState {
+        players: players.values().filter(|p| p.alive).map(|p| PlayerState {
             player_id: p.id,
             pos_x: p.pos[0],
             pos_y: p.pos[1],
