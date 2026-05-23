@@ -1,7 +1,7 @@
 use std::time::Duration;
 use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use sha2::{Sha256, Digest};
-use wtransport::{Endpoint, Identity, ServerConfig, tls::Certificate, tls::PrivateKey};
+use wtransport::{Endpoint, Identity, ServerConfig, tls::Certificate, tls::CertificateChain, tls::PrivateKey};
 use base64::Engine;
 use time::{OffsetDateTime, Duration as TimeDuration};
 
@@ -101,14 +101,33 @@ pub async fn build_endpoint() -> Endpoint<wtransport::endpoint::endpoint_side::S
             let cert_path = format!("/etc/letsencrypt/live/{domain}/fullchain.pem");
             let key_path = format!("/etc/letsencrypt/live/{domain}/privkey.pem");
             println!("[CERT] Loading Let's Encrypt cert for {domain}");
-            Identity::load_pemfiles(&cert_path, &key_path)
-                .await
-                .unwrap_or_else(|e| panic!("[CERT] Failed to load cert for {domain}: {e}"))
+
+            let cert_bytes = std::fs::read(&cert_path)
+                .unwrap_or_else(|e| panic!("[CERT] Cannot read {cert_path}: {e}"));
+            let key_bytes = std::fs::read(&key_path)
+                .unwrap_or_else(|e| panic!("[CERT] Cannot read {key_path}: {e}"));
+
+            // Parse ALL certs from fullchain.pem (leaf + Let's Encrypt intermediates)
+            let certs: Vec<Certificate> = rustls_pemfile::certs(&mut cert_bytes.as_slice())
+                .filter_map(|r| r.ok())
+                .map(|der| Certificate::from_der(der.to_vec()).expect("invalid cert DER"))
+                .collect();
+            println!("[CERT] Loaded {} certificate(s) in chain for {domain}", certs.len());
+            assert!(!certs.is_empty(), "[CERT] No certificates found in {cert_path}");
+
+            let key_der = rustls_pemfile::private_key(&mut key_bytes.as_slice())
+                .unwrap_or_else(|e| panic!("[CERT] Cannot parse key for {domain}: {e}"))
+                .unwrap_or_else(|| panic!("[CERT] No private key found in {key_path}"));
+
+            Identity::new(
+                CertificateChain::new(certs),
+                PrivateKey::from_der_pkcs8(key_der.secret_der().to_vec()),
+            )
         }
         Err(_) => {
             let (cert_der, key_der, _hash_b64) = make_or_load_cert();
             Identity::new(
-                wtransport::tls::CertificateChain::single(
+                CertificateChain::single(
                     Certificate::from_der(cert_der).expect("invalid cert DER bytes"),
                 ),
                 PrivateKey::from_der_pkcs8(key_der),

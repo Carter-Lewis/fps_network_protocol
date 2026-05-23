@@ -20,4 +20,5 @@ bytes = "1"
 quinn = "0.10"
 time = "0.3"
 rustls = "0.21"
+rustls-pemfile = "2"
 
