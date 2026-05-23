@@ -223,3 +223,4 @@ python3 fps_game/serve.py 8000 cert.pem key.pem   # HTTPS (required for WebTrans
 ```
 
 Server IP is configured in `fps_game/scripts/NetworkManager.gd` (`CLOUD_IP`, `LOCAL_IP`, `TOKYO_IP`).
+starting new push...
